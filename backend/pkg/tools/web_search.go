@@ -41,6 +41,7 @@ const (
 	EnginePerplexity = database.SearchengineTypePerplexity
 	EngineSearxng    = database.SearchengineTypeSearxng
 	EngineSploitus   = database.SearchengineTypeSploitus
+	EngineCrtsh      = database.SearchengineTypeCrtsh
 	EngineInternal   = database.SearchengineTypeBrowser
 )
 
@@ -64,6 +65,11 @@ const (
 	// ModeExploit — exploit / PoC / offensive-tool discovery. The exploit index
 	// leads; universal analytic engines and then classic engines back it up.
 	ModeExploit SearchMode = "exploit"
+
+	// ModeCert — certificate-transparency lookup for a domain. The crt.sh engine
+	// leads (it is always available); classic engines back it up in case crt.sh
+	// itself is down, so the intent never dead-ends.
+	ModeCert SearchMode = "cert"
 )
 
 // defaultMode is used when the agent omits `mode` (or sends an unknown one). "answer"
@@ -105,6 +111,12 @@ var fallbackStrategy = map[SearchMode][]database.SearchengineType{
 	ModeExploit: {
 		EngineSploitus, EngineTavily, EngineFirecrawl, EnginePerplexity, EngineInternal,
 		EngineTraversaal, EngineGoogle, EngineDuckDuckGo, EngineSearxng,
+	},
+
+	// 5. Certificate transparency — crt.sh leads (free, always available); the
+	//    internal analytics engine and classic engines back it up if crt.sh fails.
+	ModeCert: {
+		EngineCrtsh, EngineInternal, EngineSearxng, EngineDuckDuckGo,
 	},
 }
 
@@ -184,6 +196,7 @@ func buildSearchEngines(
 		EnginePerplexity: searchers.NewPerplexity(cfg, sum),
 		EngineSearxng:    searchers.NewSearxng(cfg, sum),
 		EngineSploitus:   searchers.NewSploitus(cfg),
+		EngineCrtsh:      searchers.NewCrtsh(cfg),
 	}
 
 	// The internal analytics engine discovers URLs with the link engines (in priority
@@ -393,6 +406,8 @@ func normalizeMode(mode string) SearchMode {
 		return ModeResearch
 	case ModeExploit:
 		return ModeExploit
+	case ModeCert:
+		return ModeCert
 	default:
 		return defaultMode
 	}

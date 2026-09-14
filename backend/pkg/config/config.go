@@ -196,6 +196,10 @@ type Config struct {
 	FirecrawlAPIKey string `env:"FIRECRAWL_API_KEY"`
 	FirecrawlAPIURL string `env:"FIRECRAWL_API_URL" envDefault:"https://api.firecrawl.dev"`
 
+	// === Search Engine: crt.sh (Certificate Transparency) ===
+	// No API key required; override to point at a private mirror.
+	CrtshAPIURL string `env:"CRTSH_API_URL" envDefault:"https://crt.sh"`
+
 	// === Search Engine: Perplexity AI ===
 	PerplexityAPIKey      string `env:"PERPLEXITY_API_KEY"`
 	PerplexityModel       string `env:"PERPLEXITY_MODEL" envDefault:"sonar-pro"`
