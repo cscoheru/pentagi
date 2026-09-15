@@ -483,6 +483,7 @@ const (
 	SearchengineTypeSearxng    SearchengineType = "searxng"
 	SearchengineTypeSploitus   SearchengineType = "sploitus"
 	SearchengineTypeCrtsh      SearchengineType = "crtsh"
+	SearchengineTypeFofa       SearchengineType = "fofa"
 )
 
 func (e *SearchengineType) Scan(src interface{}) error {

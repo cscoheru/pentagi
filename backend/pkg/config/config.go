@@ -200,6 +200,14 @@ type Config struct {
 	// No API key required; override to point at a private mirror.
 	CrtshAPIURL string `env:"CRTSH_API_URL" envDefault:"https://crt.sh"`
 
+	// === Search Engine: FOFA (Chinese asset mapping) ===
+	// Register at https://fofa.info → 个人中心 → API key. Free tier
+	// caps results at 100/query; the response includes quota_free so the
+	// operator can see remaining budget.
+	FofaEmail  string `env:"FOFA_EMAIL"`
+	FofaAPIKey string `env:"FOFA_API_KEY"`
+	FofaAPIURL string `env:"FOFA_API_URL" envDefault:"https://fofa.info"`
+
 	// === Search Engine: Perplexity AI ===
 	PerplexityAPIKey      string `env:"PERPLEXITY_API_KEY"`
 	PerplexityModel       string `env:"PERPLEXITY_MODEL" envDefault:"sonar-pro"`

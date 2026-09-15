@@ -42,6 +42,7 @@ const (
 	EngineSearxng    = database.SearchengineTypeSearxng
 	EngineSploitus   = database.SearchengineTypeSploitus
 	EngineCrtsh      = database.SearchengineTypeCrtsh
+	EngineFofa       = database.SearchengineTypeFofa
 	EngineInternal   = database.SearchengineTypeBrowser
 )
 
@@ -89,7 +90,7 @@ var fallbackStrategy = map[SearchMode][]database.SearchengineType{
 	// 1. Link discovery — cheap index engines first, ordered by breadth/consistency;
 	//    analytic engines are a deep last resort so links never dead-ends.
 	ModeLinks: {
-		EngineGoogle, EngineDuckDuckGo, EngineSearxng, EngineFirecrawl,
+		EngineGoogle, EngineFofa, EngineDuckDuckGo, EngineSearxng, EngineFirecrawl,
 		EngineTavily, EnginePerplexity, EngineTraversaal,
 	},
 
@@ -197,6 +198,7 @@ func buildSearchEngines(
 		EngineSearxng:    searchers.NewSearxng(cfg, sum),
 		EngineSploitus:   searchers.NewSploitus(cfg),
 		EngineCrtsh:      searchers.NewCrtsh(cfg),
+		EngineFofa:       searchers.NewFofa(cfg),
 	}
 
 	// The internal analytics engine discovers URLs with the link engines (in priority
