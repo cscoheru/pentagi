@@ -27,6 +27,7 @@ services:
     restart: unless-stopped
     container_name: pentagi
     hostname: pentagi
+    mem_limit: 1.5g
     expose:
       - 8443/tcp
     ports:
@@ -219,6 +220,7 @@ services:
     restart: unless-stopped
     container_name: pgvector
     hostname: pgvector
+    mem_limit: 800m
     expose:
       - 5432/tcp
     ports:
@@ -245,6 +247,7 @@ services:
   pgexporter:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
     restart: unless-stopped
+    mem_limit: 128m
     depends_on:
       pgvector:
         condition: service_healthy
@@ -268,6 +271,7 @@ services:
     restart: unless-stopped
     container_name: scraper
     hostname: scraper
+    mem_limit: 1.2g
     expose:
       - 443/tcp
     ports:

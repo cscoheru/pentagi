@@ -24,6 +24,7 @@ services:
     restart: unless-stopped
     container_name: langfuse-worker
     hostname: langfuse-worker
+    mem_limit: 1.5g
     depends_on: &langfuse-depends-on
       postgres:
         condition: service_healthy
@@ -96,6 +97,7 @@ services:
     restart: unless-stopped
     container_name: langfuse-web
     hostname: langfuse-web
+    mem_limit: 1.5g
     depends_on: *langfuse-depends-on
     expose:
       - 3000/tcp
@@ -152,6 +154,7 @@ services:
     user: "101:101"
     container_name: langfuse-clickhouse
     hostname: langfuse-clickhouse
+    mem_limit: 2g
     environment:
       CLICKHOUSE_DB: ${LANGFUSE_CLICKHOUSE_DB:-default}
       CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
@@ -159,6 +162,7 @@ services:
     volumes:
       - langfuse-clickhouse-data:/var/lib/clickhouse
       - langfuse-clickhouse-logs:/var/log/clickhouse-server
+      - ./langfuse-clickhouse-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
       interval: 5s
@@ -173,10 +177,11 @@ services:
       - langfuse-network
 
   minio:
-    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    image: quay.io/minio/minio:latest
     restart: unless-stopped
     container_name: langfuse-minio
     hostname: langfuse-minio
+    mem_limit: 500m
     command: server /data --console-address ":9001" --address ":9000" --json
     environment:
       MINIO_ROOT_USER: ${LANGFUSE_S3_ACCESS_KEY_ID:-minio}
@@ -220,6 +225,7 @@ services:
     restart: unless-stopped
     container_name: langfuse-redis
     hostname: langfuse-redis
+    mem_limit: 200m
     command: >
       --requirepass ${LANGFUSE_REDIS_AUTH:-myredissecret}
     healthcheck:
@@ -239,6 +245,7 @@ services:
     restart: unless-stopped
     container_name: langfuse-postgres
     hostname: langfuse-postgres
+    mem_limit: 400m
     environment:
       POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-postgres}
