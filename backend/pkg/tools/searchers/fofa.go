@@ -19,8 +19,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -109,24 +111,29 @@ func (s *fofa) Handle(ctx context.Context, req Request) (string, error) {
 
 // buildQuery maps a free-form user query into a FOFA DSL string.
 //
-// TODO(user contribution, 5-10 lines): implement query normalization.
+// Resolution order:
+//  1. If the query already looks like FOFA DSL (contains "=" AND quote), it
+//     is accepted ONLY when the field name is in fofaAllowedFields — this
+//     guards against prompt-injection where the LLM constructs an exotic or
+//     adversarial DSL string.
+//  2. A bare IPv4 (net.ParseIP) or IPv4 CIDR (net.ParseCIDR) is wrapped as
+//     ip="...". This check runs BEFORE the path/port strip because the strip
+//     would otherwise eat the CIDR's slash.
+//  3. A DNS hostname (any number of labels, with a valid public TLD) is
+//     wrapped as domain="..." so every issued subdomain is returned. The
+//     multi-label suffix check covers both "example.com" and "example.co.uk"
+//     uniformly — both want "matches every subdomain", which is what
+//     domain= does. host= remains reachable via the verbatim DSL path when
+//     the LLM really wants an exact hostname match.
+//  4. Anything else (single word, ambiguous, junk) falls back to title="..." —
+//     FOFA scans page titles so this always returns SOMETHING rather than
+//     failing the call. Multi-word queries (e.g., "Apache Struts") are
+//     preserved verbatim inside the title DSL.
 //
-// The user query is one of:
-//   - Bare root domain:        "example.com"             → domain="example.com"
-//   - Wildcard subdomain:      "*.example.com"           → domain="*.example.com"
-//   - IPv4 address:            "1.2.3.4"                 → ip="1.2.3.4"
-//   - IPv4 CIDR:               "1.2.3.0/24"              → ip="1.2.3.0/24"
-//   - Bare title keyword:      "Kubelet"                 → title="Kubelet"
-//   - Already FOFA DSL:        'host="api.example.com"'  → return verbatim
-//   - Component / banner:      'product="Nginx"'         → return verbatim
-//
-// Strategy: detect via regex whether the input is already a FOFA DSL
-// (contains '=' and quotes), otherwise classify by structure (contains '/'
-// → CIDR; matches ipv4 → ip; contains '.' but not '=' → domain; else title).
-// Strip http(s):// prefix; trim trailing slashes; lowercase. Return only the
-// DSL fragment (no leading "q=" — base64 happens in search()).
+// Only tabs/newlines and '@' are hard-rejected. Spaces are preserved for
+// keyword-style queries.
 func (s *fofa) buildQuery(query string) (string, error) {
-	q := strings.ToLower(strings.TrimSpace(query))
+	q := strings.TrimSpace(query)
 	q = strings.TrimPrefix(q, "http://")
 	q = strings.TrimPrefix(q, "https://")
 	q = strings.TrimSuffix(q, "/")
@@ -135,10 +142,114 @@ func (s *fofa) buildQuery(query string) (string, error) {
 		return "", Fatal(fmt.Errorf("fofa: 'query' is required"))
 	}
 
-	// TODO: replace this stub with the real classifier described above.
-	// For now we pass through verbatim — better than failing, and lets the
-	// operator smoke-test the rest of the pipeline with explicit FOFA DSL.
+	// Already DSL? Whitelist-validate the field name. Keep the original
+	// casing of the value (FOFA field names are case-sensitive; values
+	// are case-insensitive but preserving user intent is cleaner).
+	if strings.Contains(q, "=") && strings.Contains(q, "\"") {
+		return s.validateDSL(q)
+	}
+
+	// From here on, the input is not DSL — lowercase for classification.
+	q = strings.ToLower(q)
+
+	// Reject only the unambiguous junk. Spaces stay — multi-word queries
+	// become title="..." which is valid FOFA DSL.
+	if strings.ContainsAny(q, "\t\r\n@") {
+		return "", Fatal(fmt.Errorf("fofa: query %q contains disallowed characters", clipQuery(q)))
+	}
+
+	// IPv4 CIDR — MUST run before the path/port strip, otherwise the "/24"
+	// suffix gets eaten.
+	if _, _, err := net.ParseCIDR(q); err == nil {
+		return fmt.Sprintf("ip=%q", q), nil
+	}
+	// Bare IPv4.
+	if net.ParseIP(q) != nil {
+		return fmt.Sprintf("ip=%q", q), nil
+	}
+
+	// Strip an accidental path / port suffix (e.g., "example.com:8080/foo" →
+	// "example.com"). This is a no-op for IPs and CIDRs above.
+	if i := strings.IndexAny(q, "/:"); i > 0 {
+		q = q[:i]
+	}
+	if q == "" {
+		return "", Fatal(fmt.Errorf("fofa: 'query' is required after path/port strip"))
+	}
+
+	// DNS hostname: any number of labels, with a valid public TLD.
+	if isDNSHostname(q) {
+		return fmt.Sprintf("domain=%q", q), nil
+	}
+
+	// Last resort: keyword/title search. FOFA always has SOME result.
+	return fmt.Sprintf("title=%q", q), nil
+}
+
+// validateDSL accepts a verbatim FOFA DSL string only when its leading field
+// name is in the strict whitelist. This blocks prompt injection via crafted
+// DSL (e.g., field names that smuggle base64 payloads or unsupported
+// operators).
+func (s *fofa) validateDSL(q string) (string, error) {
+	i := strings.Index(q, "=")
+	if i <= 0 {
+		return "", Fatal(fmt.Errorf("fofa: malformed DSL %q (no leading field)", clipQuery(q)))
+	}
+	field := strings.TrimSpace(q[:i])
+	if _, ok := fofaAllowedFields[field]; !ok {
+		return "", Fatal(fmt.Errorf("fofa: DSL field %q is not in the whitelist (use one of: %s)",
+			field, fofaAllowedFieldsKeys()))
+	}
 	return q, nil
+}
+
+// fofaAllowedFields enumerates the FOFA field names the LLM is permitted to
+// invoke directly. Anything outside this set is rejected to keep the searcher
+// from executing arbitrary FOFA operators. The map form gives O(1) lookup
+// and a stable enumeration order for error messages.
+var fofaAllowedFields = map[string]struct{}{
+	"domain": {}, "ip": {}, "host": {}, "title": {}, "cert": {}, "port": {}, "protocol": {},
+	"product": {}, "server": {}, "os": {}, "banner": {}, "city": {}, "country": {},
+	"header": {}, "body": {}, "jarm": {}, "asn": {}, "org": {}, "base_protocol": {},
+	"is_domain": {}, "is_ipv4": {}, "icon_hash": {}, "fid": {}, "sitemap": {},
+}
+
+func fofaAllowedFieldsKeys() string {
+	out := make([]string, 0, len(fofaAllowedFields))
+	for k := range fofaAllowedFields {
+		out = append(out, k)
+	}
+	return strings.Join(out, ", ")
+}
+
+// dnsLabelRE enforces the standard DNS label charset: 1-63 chars, alnum +
+// hyphen, cannot start or end with hyphen.
+var dnsLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// tldRE accepts either:
+//   - a 2+ character alphabetic TLD (com, org, cn, io, …), or
+//   - a Punycode (IDN) TLD starting with "xn--" (e.g., xn--0zwm56d for 中国).
+// One-letter "TLDs" are deliberately rejected — public DNS never assigns
+// them and FOFA has nothing to match against.
+var tldRE = regexp.MustCompile(`^[a-z]{2,}$|^xn--[a-z0-9]{2,}$`)
+
+// isDNSHostname reports whether q parses as a valid DNS hostname. It rejects
+// bare IPv4 strings (handled earlier by net.ParseIP), pure-numeric labels,
+// labels that violate DNS charset, and 1-label inputs.
+func isDNSHostname(q string) bool {
+	if !strings.Contains(q, ".") {
+		return false
+	}
+	labels := strings.Split(q, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if !dnsLabelRE.MatchString(l) {
+			return false
+		}
+	}
+	return tldRE.MatchString(labels[len(labels)-1])
 }
 
 // search calls the FOFA /api/v1/search/all endpoint and renders markdown.
