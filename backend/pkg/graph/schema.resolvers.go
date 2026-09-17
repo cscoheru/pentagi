@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
+	"io"
 	"pentagi/pkg/controller"
 	"pentagi/pkg/database"
 	"pentagi/pkg/database/converter"
@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -1431,29 +1432,59 @@ func (r *queryResolver) FlowReport(ctx context.Context, flowID int64) (string, e
 		// find + sort-by-size + take the biggest; -size +100c drops empty files
 		// and one-line stubs. We list /root and /tmp because subtasks stash
 		// intermediate reports in /tmp before copying the final version to /root.
-		findCmd := `find /root /tmp -maxdepth 4 -type f \( -name '*report*.md' -o -name '*assessment*.md' \) -size +100c 2>/dev/null | xargs -r ls -la 2>/dev/null | sort -k5 -n -r | head -1 | awk '{print $NF}'`
-		pathBytes, err := exec.CommandContext(ctx, "docker", "exec", c.Name, "sh", "-c", findCmd).CombinedOutput()
+		findCmd := []string{"sh", "-c", `find /root /tmp -maxdepth 4 -type f \( -name '*report*.md' -o -name '*assessment*.md' \) -size +100c 2>/dev/null | xargs -r ls -la 2>/dev/null | sort -k5 -n -r | head -1 | awk '{print $NF}'`}
+		execRes, err := r.DockerClient.ContainerExecCreate(ctx, c.Name, client.ExecCreateOptions{
+			Cmd:          findCmd,
+			AttachStdout: true,
+			AttachStderr: true,
+		})
 		if err != nil {
-			r.Logger.WithError(err).WithField("container", c.Name).Debug("docker exec find failed")
+			r.Logger.WithError(err).WithField("container", c.Name).Debug("docker exec find create failed")
 			continue
 		}
-		reportPath := strings.TrimSpace(string(pathBytes))
+		findAttach, err := r.DockerClient.ContainerExecAttach(ctx, execRes.ID, client.ExecAttachOptions{})
+		if err != nil {
+			r.Logger.WithError(err).WithField("container", c.Name).Debug("docker exec find attach failed")
+			continue
+		}
+		findOut, _ := io.ReadAll(findAttach.Reader)
+		findAttach.Close()
+
+		reportPath := strings.TrimSpace(string(findOut))
 		if reportPath == "" {
 			continue
 		}
 
-		out, err := exec.CommandContext(ctx, "docker", "exec", c.Name, "cat", reportPath).Output()
+		catRes, err := r.DockerClient.ContainerExecCreate(ctx, c.Name, client.ExecCreateOptions{
+			Cmd:          []string{"cat", reportPath},
+			AttachStdout: true,
+			AttachStderr: true,
+		})
 		if err != nil {
-			r.Logger.WithError(err).WithField("path", reportPath).Debug("docker exec cat failed")
+			r.Logger.WithError(err).WithField("path", reportPath).Debug("docker exec cat create failed")
+			continue
+		}
+		catAttach, err := r.DockerClient.ContainerExecAttach(ctx, catRes.ID, client.ExecAttachOptions{})
+		if err != nil {
+			r.Logger.WithError(err).WithField("path", reportPath).Debug("docker exec cat attach failed")
+			continue
+		}
+		catOut, _ := io.ReadAll(catAttach.Reader)
+		catAttach.Close()
+
+		// Skip empty / near-empty payloads — likely a stub or template file
+		// that the orchestrator wrote before the actual report landed.
+		if len(catOut) < 200 {
+			r.Logger.WithField("container", c.Name).WithField("path", reportPath).WithField("size", len(catOut)).Debug("flow report too small, skipping")
 			continue
 		}
 
 		r.Logger.WithFields(logrus.Fields{
 			"container": c.Name,
 			"path":      reportPath,
-			"size":      len(out),
+			"size":      len(catOut),
 		}).Info("flow report returned")
-		return string(out), nil
+		return string(catOut), nil
 	}
 
 	return "", nil

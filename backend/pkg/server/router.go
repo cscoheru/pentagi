@@ -202,7 +202,7 @@ func NewRouter(
 	knowledgeService := services.NewKnowledgeService(orm, knowledgeStore)
 	anonymizerService := services.NewAnonymizerService(textReplacer)
 	graphqlService := services.NewGraphqlService(
-		db, cfg, baseURL, cfg.CorsOrigins, tokenCache, providers, controller, subscriptions, knowledgeStore, textReplacer,
+		db, cfg, baseURL, cfg.CorsOrigins, tokenCache, providers, controller, subscriptions, knowledgeStore, textReplacer, dockerClient,
 	)
 
 	router := gin.Default()

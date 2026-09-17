@@ -5,6 +5,7 @@ import (
 	"pentagi/pkg/controller"
 	"pentagi/pkg/database"
 	"pentagi/pkg/database/knowledge"
+	"pentagi/pkg/docker"
 	"pentagi/pkg/graph/subscriptions"
 	"pentagi/pkg/providers"
 	"pentagi/pkg/server/auth"
@@ -29,4 +30,5 @@ type Resolver struct {
 	Subscriptions   subscriptions.SubscriptionsController
 	Knowledge       knowledge.KnowledgeStore
 	Replacer        anonymizer.Replacer
+	DockerClient    docker.DockerClient
 }
