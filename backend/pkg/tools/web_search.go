@@ -43,6 +43,7 @@ const (
 	EngineSploitus   = database.SearchengineTypeSploitus
 	EngineCrtsh      = database.SearchengineTypeCrtsh
 	EngineFofa       = database.SearchengineTypeFofa
+	EngineShodanInternetDB = database.SearchengineTypeShodanInternetDB
 	EngineInternal   = database.SearchengineTypeBrowser
 )
 
@@ -98,7 +99,7 @@ var fallbackStrategy = map[SearchMode][]database.SearchengineType{
 	//    browser-analytics engine is a mid/late fallback; link engines are the floor.
 	ModeAnswer: {
 		EngineTavily, EngineFirecrawl, EnginePerplexity, EngineInternal, EngineTraversaal,
-		EngineGoogle, EngineDuckDuckGo, EngineSearxng,
+		EngineGoogle, EngineDuckDuckGo, EngineSearxng, EngineShodanInternetDB,
 	},
 
 	// 3. Deep research — strongest reasoning engine first, then the rest.
@@ -197,8 +198,9 @@ func buildSearchEngines(
 		EnginePerplexity: searchers.NewPerplexity(cfg, sum),
 		EngineSearxng:    searchers.NewSearxng(cfg, sum),
 		EngineSploitus:   searchers.NewSploitus(cfg),
-		EngineCrtsh:      searchers.NewCrtsh(cfg),
-		EngineFofa:       searchers.NewFofa(cfg),
+		EngineCrtsh:             searchers.NewCrtsh(cfg),
+		EngineFofa:              searchers.NewFofa(cfg),
+		EngineShodanInternetDB:  searchers.NewShodanInternetDB(cfg),
 	}
 
 	// The internal analytics engine discovers URLs with the link engines (in priority

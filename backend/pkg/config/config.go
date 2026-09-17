@@ -208,6 +208,11 @@ type Config struct {
 	FofaAPIKey string `env:"FOFA_API_KEY"`
 	FofaAPIURL string `env:"FOFA_API_URL" envDefault:"https://fofa.info"`
 
+	// === Search Engine: Shodan InternetDB (free IP-intelligence) ===
+	// Zero key, zero quota. Returns per-IP {ports, cpes, hostnames, tags, vulns}.
+	// Optional SHODAN_INTERNETDB_API_URL lets operators point at a self-hosted mirror.
+	ShodanInternetDBAPIURL string `env:"SHODAN_INTERNETDB_API_URL" envDefault:"https://internetdb.shodan.io"`
+
 	// === Search Engine: Perplexity AI ===
 	PerplexityAPIKey      string `env:"PERPLEXITY_API_KEY"`
 	PerplexityModel       string `env:"PERPLEXITY_MODEL" envDefault:"sonar-pro"`
