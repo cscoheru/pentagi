@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"bytes"
 	"pentagi/pkg/controller"
 	"pentagi/pkg/database"
 	"pentagi/pkg/database/converter"
@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
@@ -1447,11 +1448,20 @@ func (r *queryResolver) FlowReport(ctx context.Context, flowID int64) (string, e
 			r.Logger.WithError(err).WithField("container", c.Name).Debug("docker exec find attach failed")
 			continue
 		}
-		findOut, _ := io.ReadAll(findAttach.Reader)
+		// Docker multiplexes exec output: each frame is [1-byte type][3 pad][4-byte BE size][payload].
+		// stdcopy.StdCopy demuxes it back into plain stdout/stderr streams.
+		var findStdout bytes.Buffer
+		var findStderr bytes.Buffer
+		if _, err := stdcopy.StdCopy(&findStdout, &findStderr, findAttach.Reader); err != nil {
+			r.Logger.WithError(err).WithField("container", c.Name).Debug("docker exec find stdcopy failed")
+			findAttach.Close()
+			continue
+		}
 		findAttach.Close()
 
-		reportPath := strings.TrimSpace(string(findOut))
+		reportPath := strings.TrimSpace(findStdout.String())
 		if reportPath == "" {
+			r.Logger.WithField("container", c.Name).WithField("stderr", strings.TrimSpace(findStderr.String())).Debug("flow report find returned empty path")
 			continue
 		}
 
@@ -1469,8 +1479,15 @@ func (r *queryResolver) FlowReport(ctx context.Context, flowID int64) (string, e
 			r.Logger.WithError(err).WithField("path", reportPath).Debug("docker exec cat attach failed")
 			continue
 		}
-		catOut, _ := io.ReadAll(catAttach.Reader)
+		var catStdout bytes.Buffer
+		var catStderr bytes.Buffer
+		if _, err := stdcopy.StdCopy(&catStdout, &catStderr, catAttach.Reader); err != nil {
+			r.Logger.WithError(err).WithField("path", reportPath).Debug("docker exec cat stdcopy failed")
+			catAttach.Close()
+			continue
+		}
 		catAttach.Close()
+		catOut := catStdout.Bytes()
 
 		// Skip empty / near-empty payloads — likely a stub or template file
 		// that the orchestrator wrote before the actual report landed.
