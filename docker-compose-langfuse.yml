@@ -108,9 +108,11 @@ services:
       # Next.js 16 binds to $HOSTNAME by default in production, which inside
       # docker means the container's hostname (not 0.0.0.0). The docker port
       # mapping 127.0.0.1:4000->3000 only works when the server binds to all
-      # interfaces. Force 0.0.0.0 so the host port is reachable.
-      HOST: 0.0.0.0
+      # interfaces. Force 0.0.0.0 so the host port is reachable. Next.js 16
+      # production mode reads `HOSTNAME` (not `HOST`) for bind address; setting
+      # HOST=0.0.0.0 has no effect — verified 2026-09-17 with /proc/net/tcp.
       PORT: 3000
+      HOSTNAME: 0.0.0.0
       NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:4000}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-mysecret}
       LANGFUSE_LOG_LEVEL: ${LANGFUSE_LOG_LEVEL:-info}
