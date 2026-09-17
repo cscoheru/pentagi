@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"pentagi/pkg/controller"
 	"pentagi/pkg/database"
 	"pentagi/pkg/database/converter"
@@ -1398,6 +1399,64 @@ func (r *queryResolver) Flow(ctx context.Context, flowID int64) (*model.Flow, er
 	}
 
 	return converter.ConvertFlow(flow, containers), nil
+}
+
+// FlowReport is the resolver for the flowReport field.
+func (r *queryResolver) FlowReport(ctx context.Context, flowID int64) (string, error) {
+	uid, err := validatePermissionWithFlowID(ctx, "flows.view", flowID, r.DB)
+	if err != nil {
+		return "", err
+	}
+
+	r.Logger.WithFields(logrus.Fields{
+		"uid":  uid,
+		"flow": flowID,
+	}).Debug("get flow report")
+
+	containers, err := r.DB.GetFlowContainers(ctx, flowID)
+	if err != nil {
+		return "", err
+	}
+
+	// Scan every running terminal container attached to this flow and return
+	// the largest matching markdown report. The orchestrator writes final
+	// reports to /root/<title>_report.md or /root/<title>_assessment.md inside
+	// the terminal sandbox; we pick the largest by size because that is
+	// almost always the consolidated final report vs. intermediate drafts.
+	for _, c := range containers {
+		if c.Status != database.ContainerStatusRunning {
+			continue
+		}
+
+		// find + sort-by-size + take the biggest; -size +100c drops empty files
+		// and one-line stubs. We list /root and /tmp because subtasks stash
+		// intermediate reports in /tmp before copying the final version to /root.
+		findCmd := `find /root /tmp -maxdepth 4 -type f \( -name '*report*.md' -o -name '*assessment*.md' \) -size +100c 2>/dev/null | xargs -r ls -la 2>/dev/null | sort -k5 -n -r | head -1 | awk '{print $NF}'`
+		pathBytes, err := exec.CommandContext(ctx, "docker", "exec", c.Name, "sh", "-c", findCmd).CombinedOutput()
+		if err != nil {
+			r.Logger.WithError(err).WithField("container", c.Name).Debug("docker exec find failed")
+			continue
+		}
+		reportPath := strings.TrimSpace(string(pathBytes))
+		if reportPath == "" {
+			continue
+		}
+
+		out, err := exec.CommandContext(ctx, "docker", "exec", c.Name, "cat", reportPath).Output()
+		if err != nil {
+			r.Logger.WithError(err).WithField("path", reportPath).Debug("docker exec cat failed")
+			continue
+		}
+
+		r.Logger.WithFields(logrus.Fields{
+			"container": c.Name,
+			"path":      reportPath,
+			"size":      len(out),
+		}).Info("flow report returned")
+		return string(out), nil
+	}
+
+	return "", nil
 }
 
 // Tasks is the resolver for the tasks field.

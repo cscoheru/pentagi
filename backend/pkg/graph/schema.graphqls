@@ -995,6 +995,12 @@ type Query {
   flows: [Flow!]
   flow(flowId: ID!): Flow!
 
+  # flowReport returns the markdown content of the flow's final report file
+  # (written by terminal-sandbox subtasks to /root/*_report.md). Returns the
+  # largest matching file across all containers attached to this flow; empty
+  # string if none found. Used by the UI "Download Report" button.
+  flowReport(flowId: ID!): String!
+
   # Task and execution logs
   tasks(flowId: ID!): [Task!]
   flowFiles(flowId: ID!): [FlowFile!]!
