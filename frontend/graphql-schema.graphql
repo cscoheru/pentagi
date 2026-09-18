@@ -864,13 +864,14 @@ query assistantLogs($flowId: ID!, $assistantId: ID!) {
     }
 }
 
-query flowReport($id: ID!) {
+query flowSummary($id: ID!) {
     flow(flowId: $id) {
         ...flowFragment
     }
-    tasks(flowId: $id) {
-        ...taskFragment
-    }
+}
+
+query agentReport($flowId: ID!) {
+    flowReport(flowId: $flowId)
 }
 
 query usageStatsTotal {

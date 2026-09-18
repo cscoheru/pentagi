@@ -31,7 +31,7 @@ const EXCLUDED: Record<string, string> = {
 /** Route builders are functions, so the static walk below cannot see them. */
 const DYNAMIC_ROUTES: Record<string, string> = {
     flow: 'manifest entry (routes.flow("5"))',
-    flowReport: 'not swept: needs a finished-flow report cassette',
+    flowReport: 'not swept: needs a Playwright spec covering the standalone report page',
     knowledge: 'specs/crud/knowledges.spec.ts — detail page after create',
     login: 'specs/smoke.spec.ts + the /login a11y scan',
     'settings.newProvider': 'specs/settings/providers.spec.ts — opened from the empty state',

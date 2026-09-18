@@ -1,12 +1,13 @@
 import type { ResultOf } from '@graphql-typed-document-node/core';
 
 import type {
+    AgentReportDocument,
     AssistantsDocument,
     FlowDocument,
     FlowFilesDocument,
     FlowFragmentFragment,
-    FlowReportDocument,
     FlowStatsByFlowDocument,
+    FlowSummaryDocument,
     MessageLogFragmentFragment,
     TerminalLogFragmentFragment,
     ToolcallsStatsByFlowDocument,
@@ -521,14 +522,18 @@ export const livePanelsCassette = (): Cassette =>
         },
     });
 
-const flowReportData: ResultOf<typeof FlowReportDocument> = { flow: FLOW_A, tasks: [TABS_TASK] };
+const flowSummaryData: ResultOf<typeof FlowSummaryDocument> = { flow: FLOW_A };
+const agentReportData: ResultOf<typeof AgentReportDocument> = {
+    agentReport: '# Final Report\n\nBody of the e2e agent-written report.',
+};
 
 /** The Report menu only appears when the flow query returns tasks, so this overrides `flow` too. */
 export const flowReportCassette = (): Cassette =>
     flowsCassette({
         queries: {
+            agentReport: [{ data: agentReportData, variables: { flowId: '5' } }],
             flow: [{ data: flowTabsData, variables: { id: '5' } }],
-            flowReport: [{ data: flowReportData, variables: { id: '5' } }],
+            flowSummary: [{ data: flowSummaryData, variables: { id: '5' } }],
         },
         subscriptions: { messageLogAdded: [{ frames: [], variables: { flowId: '5' } }] },
     });

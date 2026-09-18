@@ -1,12 +1,12 @@
 import { skipToken, useQuery } from '@apollo/client/react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 
 import Logo from '@/components/icons/logo';
 import Markdown from '@/components/shared/markdown';
-import { FlowReportDocument } from '@/graphql/types';
+import { AgentReportDocument, FlowSummaryDocument } from '@/graphql/types';
 import { Log } from '@/lib/log';
-import { generateFileName, generatePDFFromMarkdown, generateReport } from '@/lib/report';
+import { generateFileName, generatePDFFromMarkdown } from '@/lib/report';
 
 type PdfPhase = 'done' | 'error' | 'idle';
 type ReportState = 'content' | 'error' | 'generating' | 'loading';
@@ -29,32 +29,38 @@ function FlowReport() {
         setPdfError(null);
     }
 
-    const { data, loading } = useQuery(
-        FlowReportDocument,
+    const summaryQuery = useQuery(
+        FlowSummaryDocument,
         flowId ? { errorPolicy: 'all', variables: { id: flowId } } : skipToken,
     );
 
-    // Under `errorPolicy:'all'` a partial error arrives alongside a flow that loaded fine.
-    const dataReady = !loading && !!data?.flow;
-
-    const reportContent = useMemo(
-        () => (dataReady ? generateReport(data.tasks || [], data.flow!) : ''),
-        [dataReady, data],
+    const reportQuery = useQuery(
+        AgentReportDocument,
+        flowId ? { errorPolicy: 'all', variables: { flowId } } : skipToken,
     );
+
+    // Under `errorPolicy:'all'` a partial error arrives alongside a flow that loaded fine.
+    const dataReady = !summaryQuery.loading && !!summaryQuery.data?.flow;
+    const reportContent = reportQuery.data?.agentReport ?? '';
 
     useEffect(() => {
         pdfTriggered.current = false;
     }, [flowId]);
 
     useEffect(() => {
-        if (!dataReady || !download || pdfTriggered.current || !data?.flow) {
+        if (
+            !dataReady ||
+            !download ||
+            pdfTriggered.current ||
+            !summaryQuery.data?.flow
+        ) {
             return;
         }
 
         pdfTriggered.current = true;
 
         // The generator appends the extension itself.
-        const fileName = generateFileName(data.flow);
+        const fileName = generateFileName(summaryQuery.data.flow);
 
         generatePDFFromMarkdown(reportContent, fileName)
             .then(() => {
@@ -69,14 +75,14 @@ function FlowReport() {
                 setPdfError('Failed to generate PDF');
                 setPdfPhase('error');
             });
-    }, [dataReady, download, silent, reportContent, data]);
+    }, [dataReady, download, silent, reportContent, summaryQuery.data]);
 
     let state: ReportState;
     let errorMessage: null | string = null;
 
-    if (loading) {
+    if (summaryQuery.loading || reportQuery.loading) {
         state = 'loading';
-    } else if (!data?.flow) {
+    } else if (!summaryQuery.data?.flow) {
         state = 'error';
         errorMessage = 'Failed to load flow data';
     } else if (pdfPhase === 'error') {

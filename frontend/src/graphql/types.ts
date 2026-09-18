@@ -854,11 +854,17 @@ export type AssistantLogsQueryVariables = Exact<{
 
 export type AssistantLogsQuery = { assistantLogs: Array<AssistantLogFragmentFragment> | null };
 
-export type FlowReportQueryVariables = Exact<{
+export type FlowSummaryQueryVariables = Exact<{
     id: string | number;
 }>;
 
-export type FlowReportQuery = { flow: FlowFragmentFragment; tasks: Array<TaskFragmentFragment> | null };
+export type FlowSummaryQuery = { flow: FlowFragmentFragment };
+
+export type AgentReportQueryVariables = Exact<{
+    flowId: string | number;
+}>;
+
+export type AgentReportQuery = { flowReport: string };
 
 export type UsageStatsTotalQueryVariables = Exact<{ [key: string]: never }>;
 
@@ -5710,13 +5716,13 @@ export const AssistantLogsDocument = {
         },
     ],
 } as unknown as DocumentNode<AssistantLogsQuery, AssistantLogsQueryVariables>;
-export const FlowReportDocument = {
+export const FlowSummaryDocument = {
     kind: 'Document',
     definitions: [
         {
             kind: 'OperationDefinition',
             operation: 'query',
-            name: { kind: 'Name', value: 'flowReport' },
+            name: { kind: 'Name', value: 'flowSummary' },
             variableDefinitions: [
                 {
                     kind: 'VariableDefinition',
@@ -5740,21 +5746,6 @@ export const FlowReportDocument = {
                         selectionSet: {
                             kind: 'SelectionSet',
                             selections: [{ kind: 'FragmentSpread', name: { kind: 'Name', value: 'flowFragment' } }],
-                        },
-                    },
-                    {
-                        kind: 'Field',
-                        name: { kind: 'Name', value: 'tasks' },
-                        arguments: [
-                            {
-                                kind: 'Argument',
-                                name: { kind: 'Name', value: 'flowId' },
-                                value: { kind: 'Variable', name: { kind: 'Name', value: 'id' } },
-                            },
-                        ],
-                        selectionSet: {
-                            kind: 'SelectionSet',
-                            selections: [{ kind: 'FragmentSpread', name: { kind: 'Name', value: 'taskFragment' } }],
                         },
                     },
                 ],
@@ -5790,24 +5781,6 @@ export const FlowReportDocument = {
         },
         {
             kind: 'FragmentDefinition',
-            name: { kind: 'Name', value: 'subtaskFragment' },
-            typeCondition: { kind: 'NamedType', name: { kind: 'Name', value: 'Subtask' } },
-            selectionSet: {
-                kind: 'SelectionSet',
-                selections: [
-                    { kind: 'Field', name: { kind: 'Name', value: 'id' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'status' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'title' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'description' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'result' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'taskId' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'createdAt' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'updatedAt' } },
-                ],
-            },
-        },
-        {
-            kind: 'FragmentDefinition',
             name: { kind: 'Name', value: 'flowFragment' },
             typeCondition: { kind: 'NamedType', name: { kind: 'Name', value: 'Flow' } },
             selectionSet: {
@@ -5837,34 +5810,41 @@ export const FlowReportDocument = {
                 ],
             },
         },
+    ],
+} as unknown as DocumentNode<FlowSummaryQuery, FlowSummaryQueryVariables>;
+export const AgentReportDocument = {
+    kind: 'Document',
+    definitions: [
         {
-            kind: 'FragmentDefinition',
-            name: { kind: 'Name', value: 'taskFragment' },
-            typeCondition: { kind: 'NamedType', name: { kind: 'Name', value: 'Task' } },
+            kind: 'OperationDefinition',
+            operation: 'query',
+            name: { kind: 'Name', value: 'agentReport' },
+            variableDefinitions: [
+                {
+                    kind: 'VariableDefinition',
+                    variable: { kind: 'Variable', name: { kind: 'Name', value: 'flowId' } },
+                    type: { kind: 'NonNullType', type: { kind: 'NamedType', name: { kind: 'Name', value: 'ID' } } },
+                },
+            ],
             selectionSet: {
                 kind: 'SelectionSet',
                 selections: [
-                    { kind: 'Field', name: { kind: 'Name', value: 'id' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'title' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'status' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'input' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'result' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'flowId' } },
                     {
                         kind: 'Field',
-                        name: { kind: 'Name', value: 'subtasks' },
-                        selectionSet: {
-                            kind: 'SelectionSet',
-                            selections: [{ kind: 'FragmentSpread', name: { kind: 'Name', value: 'subtaskFragment' } }],
-                        },
+                        name: { kind: 'Name', value: 'flowReport' },
+                        arguments: [
+                            {
+                                kind: 'Argument',
+                                name: { kind: 'Name', value: 'flowId' },
+                                value: { kind: 'Variable', name: { kind: 'Name', value: 'flowId' } },
+                            },
+                        ],
                     },
-                    { kind: 'Field', name: { kind: 'Name', value: 'createdAt' } },
-                    { kind: 'Field', name: { kind: 'Name', value: 'updatedAt' } },
                 ],
             },
         },
     ],
-} as unknown as DocumentNode<FlowReportQuery, FlowReportQueryVariables>;
+} as unknown as DocumentNode<AgentReportQuery, AgentReportQueryVariables>;
 export const UsageStatsTotalDocument = {
     kind: 'Document',
     definitions: [

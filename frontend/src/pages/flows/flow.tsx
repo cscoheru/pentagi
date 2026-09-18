@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-import { useMutation } from '@apollo/client/react';
+import { skipToken, useMutation, useQuery } from '@apollo/client/react';
 import {
     ChevronDown,
     Copy,
@@ -46,11 +46,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import FlowCentralTabs from '@/features/flows/flow-central-tabs';
 import FlowTabs from '@/features/flows/flow-tabs';
 import { useFlowDetailNavigation } from '@/features/flows/use-flow-detail-navigation';
-import { RenameFlowDocument, ResultType, StatusType } from '@/graphql/types';
+import { AgentReportDocument, RenameFlowDocument, ResultType, StatusType } from '@/graphql/types';
 import { useBreakpoint } from '@/hooks/use-breakpoint';
 import { useFlowTabDetection } from '@/hooks/use-flow-tab-detection';
 import { Log } from '@/lib/log';
-import { copyToClipboard, downloadTextFile, generateFileName, generateReport } from '@/lib/report';
+import { copyToClipboard, downloadTextFile, generateFileName } from '@/lib/report';
 import { routes } from '@/lib/routes';
 import { cn } from '@/lib/utils';
 import { formatName } from '@/lib/utils/format';
@@ -447,17 +447,27 @@ function Flow() {
 function FlowReportDropdown() {
     const { flowData, flowId } = useFlow();
     const flow = flowData?.flow;
-    const tasks = flowData?.tasks ?? [];
 
     const isReportDisabled = !flow || !flowId;
+
+    const { data: agentReportData } = useQuery(
+        AgentReportDocument,
+        flowId ? { errorPolicy: 'all', variables: { flowId } } : skipToken,
+    );
+    const agentReportContent = agentReportData?.agentReport ?? '';
 
     const handleCopyToClipboard = async () => {
         if (isReportDisabled) {
             return;
         }
 
-        const reportContent = generateReport(tasks, flow);
-        const success = await copyToClipboard(reportContent);
+        if (!agentReportContent) {
+            toast.error('Report not yet available');
+
+            return;
+        }
+
+        const success = await copyToClipboard(agentReportContent);
 
         if (success) {
             toast.success('Report copied to clipboard');
@@ -472,13 +482,17 @@ function FlowReportDropdown() {
             return;
         }
 
-        try {
-            const reportContent = generateReport(tasks, flow);
+        if (!agentReportContent) {
+            toast.error('Report not yet available');
 
+            return;
+        }
+
+        try {
             const baseFileName = generateFileName(flow);
             const fileName = `${baseFileName}.md`;
 
-            downloadTextFile(reportContent, fileName, 'text/markdown; charset=UTF-8');
+            downloadTextFile(agentReportContent, fileName, 'text/markdown; charset=UTF-8');
         } catch (error) {
             Log.error('Failed to download markdown report:', error);
         }
