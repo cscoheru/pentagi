@@ -76,6 +76,19 @@ func (r *mutationResolver) CreateFlow(ctx context.Context, modelProvider string,
 	}
 	prvtype := prv.Type()
 
+	// Pre-flight intent check: reject obviously-non-pentest inputs before we
+	// spawn an agent pipeline. Failures are logged inside intentCheck and
+	// fall through to allow flow creation (see intent_check.go).
+	rendered, renderErr := r.DefaultPrompter.RenderTemplate(
+		templates.PromptTypeIntentCheck,
+		map[string]any{"Input": input},
+	)
+	if renderErr != nil {
+		r.Logger.WithError(renderErr).Warn("intent_check: template render failed; continuing")
+	} else if intentErr := r.intentCheck(ctx, prv, rendered); intentErr != nil {
+		return nil, intentErr
+	}
+
 	fw, err := r.Controller.CreateFlow(ctx, uid, input, prvname, prvtype, nil, dbResources)
 	if err != nil {
 		return nil, err

@@ -27,9 +27,9 @@ func TestPromptTemplatesIntegrity(t *testing.T) {
 	if agents > 27 {
 		t.Fatalf("agents prompts amount is %d, expected 27", agents)
 	}
-	// According to the code, structure ToolsPrompts should have 12 prompts
-	if tools > 12 {
-		t.Fatalf("tools prompts amount is %d, expected 12", tools)
+	// According to the code, structure ToolsPrompts should have 13 prompts
+	if tools > 13 {
+		t.Fatalf("tools prompts amount is %d, expected 13", tools)
 	}
 }
 

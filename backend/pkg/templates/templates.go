@@ -67,6 +67,7 @@ const (
 	PromptTypeQuestionExecutionMonitor PromptType = "question_execution_monitor" // question for adviser to monitor agent execution progress
 	PromptTypeQuestionTaskPlanner      PromptType = "question_task_planner"      // question for adviser to create execution plan for agent
 	PromptTypeTaskAssignmentWrapper    PromptType = "task_assignment_wrapper"    // wraps original request with execution plan for specialist agents
+	PromptTypeIntentCheck              PromptType = "intent_check"               // pre-flight intent classification for createFlow
 )
 
 var PromptVariables = map[PromptType][]string{
@@ -412,6 +413,9 @@ var PromptVariables = map[PromptType][]string{
 	PromptTypeLanguageChooser: {
 		"Input",
 	},
+	PromptTypeIntentCheck: {
+		"Input",
+	},
 	PromptTypeToolCallIDCollector: {
 		"FunctionName",
 		"RandomContext",
@@ -487,6 +491,7 @@ type ToolsPrompts struct {
 	QuestionExecutionMonitor Prompt
 	QuestionTaskPlanner      Prompt
 	TaskAssignmentWrapper    Prompt
+	IntentCheck              Prompt
 }
 
 type DefaultPrompts struct {
@@ -592,6 +597,7 @@ func GetDefaultPrompts() (*DefaultPrompts, error) {
 			QuestionExecutionMonitor: getPrompt(PromptTypeQuestionExecutionMonitor),
 			QuestionTaskPlanner:      getPrompt(PromptTypeQuestionTaskPlanner),
 			TaskAssignmentWrapper:    getPrompt(PromptTypeTaskAssignmentWrapper),
+			IntentCheck:              getPrompt(PromptTypeIntentCheck),
 		},
 	}, nil
 }
