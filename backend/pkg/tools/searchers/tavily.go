@@ -238,6 +238,8 @@ REQUIREMENTS:
 6. Cite sources using [Source #] format when presenting specific claims
 7. Ensure the user query is fully addressed in the summary
 8. NEVER remove information that answers the user's original question
+9. SOURCE-CREDIBILITY FLAG: For every result whose URL matches 'mp.weixin.qq.com' (WeChat 公众号), prepend the literal marker '[snippet-only — needs cross-verification]' to that result's title in the summary. In the 'Sources Overview' section, list the original URL verbatim for every flagged result. These URLs cannot be treated as authoritative because the article body is typically paywalled / JS-rendered / anti-bot blocked — only the Tavily search snippet is available.
+10. NEVER fabricate missing detail: if the 'raw_content' field for a 公众号 URL is empty, suspiciously short (less than 200 chars after truncation), or absent entirely, say so explicitly in the summary ('raw_content unavailable; only snippet available'). Do NOT invent facts, statistics, or quotes to fill the gap.
 
 FORMAT:
 - Begin with a direct answer to the user query

@@ -267,6 +267,116 @@ func TestTavilyParseHTTPResponse_StatusAndDecodeErrors(t *testing.T) {
 	}
 }
 
+func TestGetSummarizePrompt_FlagsWeChatSnippet(t *testing.T) {
+	t.Run("flags mp.weixin.qq.com results with snippet-only marker", func(t *testing.T) {
+		rawWeixin := "wechat article body"
+		rawOther := "generic blog article body"
+		result := &tavilySearchResult{
+			Answer: "answer",
+			Query:  "test query",
+			Results: []tavilyResult{
+				{
+					Title:      "Wechat OA post",
+					URL:        "https://mp.weixin.qq.com/s/abc123",
+					Content:    "snippet text",
+					RawContent: &rawWeixin,
+					Score:      0.9,
+				},
+				{
+					Title:      "Generic blog",
+					URL:        "https://example.com/post",
+					Content:    "snippet",
+					RawContent: &rawOther,
+					Score:      0.5,
+				},
+			},
+		}
+
+		out, err := (&tavily{}).getSummarizePrompt("test query", result)
+		if err != nil {
+			t.Fatalf("getSummarizePrompt() unexpected error: %v", err)
+		}
+
+		mustContain := []string{
+			"mp.weixin.qq.com",
+			"snippet-only",
+			"needs cross-verification",
+			"NEVER fabricate",
+			"<raw_content",
+			"example.com/post",
+		}
+		for _, s := range mustContain {
+			if !strings.Contains(out, s) {
+				t.Errorf("getSummarizePrompt() missing %q, got prompt head: %q", s, head(out, 400))
+			}
+		}
+	})
+
+	t.Run("flags snippet-only even when raw_content is nil", func(t *testing.T) {
+		result := &tavilySearchResult{
+			Answer: "answer",
+			Query:  "test query",
+			Results: []tavilyResult{
+				{
+					Title:   "Paywalled wechat",
+					URL:     "https://mp.weixin.qq.com/s/xyz789",
+					Content: "tiny snippet",
+					// RawContent intentionally nil
+					Score: 0.8,
+				},
+			},
+		}
+
+		out, err := (&tavily{}).getSummarizePrompt("test query", result)
+		if err != nil {
+			t.Fatalf("getSummarizePrompt() unexpected error: %v", err)
+		}
+
+		if !strings.Contains(out, "snippet-only") {
+			t.Errorf("getSummarizePrompt() should flag 公众号 with nil raw_content, got prompt head: %q", head(out, 400))
+		}
+		if !strings.Contains(out, "mp.weixin.qq.com") {
+			t.Errorf("getSummarizePrompt() should include the URL even when raw_content is nil, got prompt head: %q", head(out, 400))
+		}
+	})
+
+	t.Run("renders non-wechat URL verbatim and includes rule instruction", func(t *testing.T) {
+		raw := "body"
+		result := &tavilySearchResult{
+			Answer: "answer",
+			Query:  "test query",
+			Results: []tavilyResult{
+				{
+					Title:      "Some other URL containing weixin substring",
+					URL:        "https://notweixin.example.org/path?ref=weixin",
+					Content:    "snippet",
+					RawContent: &raw,
+					Score:      0.4,
+				},
+			},
+		}
+
+		out, err := (&tavily{}).getSummarizePrompt("test query", result)
+		if err != nil {
+			t.Fatalf("getSummarizePrompt() unexpected error: %v", err)
+		}
+
+		if !strings.Contains(out, "notweixin.example.org") {
+			t.Errorf("getSummarizePrompt() should render the non-wechat URL verbatim, got: %q", head(out, 400))
+		}
+		if !strings.Contains(out, "SOURCE-CREDIBILITY FLAG") {
+			t.Errorf("getSummarizePrompt() should always include the rule instruction, got: %q", head(out, 400))
+		}
+	})
+}
+
+func head(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
+}
+
 func TestTavilyBuildResult_WithSummarizer(t *testing.T) {
 	t.Run("uses summarizer when raw content exists", func(t *testing.T) {
 		tav := &tavily{
