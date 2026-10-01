@@ -34,7 +34,12 @@ const (
 	maxLimitedAgentChainIterations = 20
 	maxAgentShutdownIterations     = 3
 	maxSoftDetectionsBeforeAbort   = 4
-	delayBetweenRetries            = 5 * time.Second
+	// A model that keeps replying in plain text is tool-incapable, which is typical for
+	// small fallback models. Passing every reply to the reflector only yields more text
+	// and burns the iteration budget without ever reaching the done tool that persists
+	// the subtask result, so the chain finalizes on its own after a few such replies.
+	maxConsecutiveTextOnlyResponses = 3
+	delayBetweenRetries             = 5 * time.Second
 )
 
 type callResult struct {
@@ -43,6 +48,36 @@ type callResult struct {
 	info      map[string]any
 	thinking  *reasoning.ContentReasoning
 	content   string
+}
+
+// synthesizeDoneCall builds a done tool call that runs through the regular tool
+// execution path, so the barrier handler persists the collected content as the
+// subtask result and reports it the same way a model-driven completion would.
+//
+// Success stays false: the model never declared the objective reached, so the
+// framework must not claim it did. Reporting a forced stop as a success would
+// tell the operator an objective was met on evidence the model never gave.
+func synthesizeDoneCall(content string) llms.ToolCall {
+	done := tools.Done{
+		Success: tools.Bool(false),
+		Result:  content,
+		Message: "finalized by the framework after repeated responses without tool calls",
+	}
+
+	args, err := json.Marshal(done)
+	if err != nil {
+		done.Message = fmt.Sprintf("failed to serialize synthesized result: %s", err)
+		args = []byte(`{"success":false,"result":"","message":"failed to serialize synthesized result"}`)
+	}
+
+	return llms.ToolCall{
+		ID:   fmt.Sprintf("framework-done-%x", time.Now().UnixNano()),
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      tools.FinalyToolName,
+			Arguments: string(args),
+		},
+	}
 }
 
 func (fp *flowProvider) performAgentChain(
@@ -103,6 +138,12 @@ func (fp *flowProvider) performAgentChain(
 		}
 	}
 
+	var (
+		textOnlyStreak  int
+		textOnlyContent []string
+		forceFinalize   bool
+	)
+
 	for iteration := 0; ; iteration++ {
 		if iteration >= maxCallsLimit {
 			msg := fmt.Sprintf("agent chain exceeded maximum iterations (%d)", maxCallsLimit)
@@ -111,7 +152,8 @@ func (fp *flowProvider) performAgentChain(
 		}
 
 		var result *callResult
-		if iteration >= maxCallsLimit-maxAgentShutdownIterations {
+		shutdownPhase := iteration >= maxCallsLimit-maxAgentShutdownIterations
+		if shutdownPhase {
 			logger.WithFields(logrus.Fields{
 				"iteration": iteration,
 				"limit":     maxCallsLimit,
@@ -141,6 +183,34 @@ func (fp *flowProvider) performAgentChain(
 			if optAgentType == pconfig.OptionsTypeAssistant {
 				fp.storeAgentResponseToGraphiti(ctx, groupID, optAgentType, result, taskID, subtaskID, chainID)
 				return fp.processAssistantResult(ctx, logger, chainID, chain, result, summarizer, summarizerHandler, rollLastUpdateTime())
+			}
+
+			// Content is collected across the whole chain, tool calls included: it is
+			// the run's accumulated knowledge and the findings often arrive as text
+			// right after a search. The shutdown reply is excluded because it is
+			// framework output, not something the model ever wrote.
+			if !shutdownPhase {
+				textOnlyStreak++
+				if result.content != "" {
+					textOnlyContent = append(textOnlyContent, result.content)
+				}
+			}
+
+			// done is a barrier only on the primary executor; elsewhere it is answered
+			// with "function not found" and the chain still ends, silently discarding
+			// whatever the generator, refiner or reporter produced.
+			if textOnlyStreak >= maxConsecutiveTextOnlyResponses && executor.IsBarrierFunction(tools.FinalyToolName) {
+				logger.WithFields(logrus.Fields{
+					"iteration": iteration,
+					"streak":    textOnlyStreak,
+					"subtask":   subtaskID,
+				}).Warn("model answered without tool calls repeatedly, finalizing chain with a synthesized done call")
+
+				// The model cannot call done itself, so the collected content is
+				// handed to the barrier handler as the subtask result instead of
+				// being dropped and re-litigated by another reflector round.
+				result.funcCalls = []llms.ToolCall{synthesizeDoneCall(strings.Join(textOnlyContent, "\n\n"))}
+				forceFinalize = true
 			} else {
 				// Build AI message with reasoning for reflector (universal pattern)
 				reflectorMsg := llms.MessageContent{Role: llms.ChatMessageTypeAI}
@@ -163,7 +233,15 @@ func (fp *flowProvider) performAgentChain(
 					obs.LogErrorOrCancel(logger.WithFields(fields), err, "failed to perform reflector")
 					return err
 				}
+
+				// Reaching a tool call ends the text-only run, but the collected
+				// content is kept: it is the knowledge the chain has built so far.
+				if len(result.funcCalls) > 0 {
+					textOnlyStreak = 0
+				}
 			}
+		} else {
+			textOnlyStreak = 0
 		}
 
 		fp.storeAgentResponseToGraphiti(ctx, groupID, optAgentType, result, taskID, subtaskID, chainID)
@@ -227,7 +305,7 @@ func (fp *flowProvider) performAgentChain(
 			}
 		}
 
-		if wantToStop {
+		if wantToStop || forceFinalize {
 			return nil
 		}
 

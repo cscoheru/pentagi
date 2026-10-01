@@ -10,7 +10,6 @@ import (
 
 	"pentagi/pkg/database"
 	obs "pentagi/pkg/observability"
-	"pentagi/pkg/providers"
 	"pentagi/pkg/tools"
 
 	"github.com/sirupsen/logrus"
@@ -299,44 +298,228 @@ func (tw *taskWorker) PutInput(ctx context.Context, input string) error {
 	return nil
 }
 
+// Convergence guards: a task run has to reach a terminal state within a bounded
+// budget instead of re-planning subtasks until something outside the process
+// intervenes. Without these a stalled run never reports an outcome at all.
+const (
+	// maxSubtasksPerRun caps how many subtasks a task run executes before it
+	// reports on what it already has and stops re-planning.
+	maxSubtasksPerRun = 4
+	// maxConsecutiveSubtaskFailures stops the run once this many subtasks in a
+	// row failed or timed out.
+	maxConsecutiveSubtaskFailures = 2
+)
+
+// The two wall clock budgets are vars so tests can tighten them to milliseconds;
+// production always uses these defaults. Read them once per run, not per call.
+var (
+	// maxTaskRunDuration caps the wall clock time of one task run.
+	maxTaskRunDuration = 15 * time.Minute
+	// maxSubtaskRunDuration caps the wall clock time of one subtask run.
+	maxSubtaskRunDuration = 5 * time.Minute
+)
+
+// errRunBudget marks a stop caused by our own convergence budget. It is
+// deliberately not context.DeadlineExceeded so the parking handler leaves the
+// task terminal instead of waiting for input that cannot help a timeout.
+var errRunBudget = errors.New("task run budget exhausted")
+
 func (tw *taskWorker) Run(ctx context.Context) error {
 	ctx = tools.PutAgentContext(ctx, database.MsgchainTypePrimaryAgent)
 
-	for len(tw.stc.ListSubtasks(ctx)) < providers.TasksNumberLimit+3 {
-		st, err := tw.stc.PopSubtask(ctx, tw)
-		if err != nil {
+	runCtx, cancel := context.WithTimeout(ctx, maxTaskRunDuration)
+	defer cancel()
+
+	executed, consecutiveFailures := 0, 0
+	var stopReason string
+
+	for executed < maxSubtasksPerRun {
+		// A cancelled parent is a user decision, not a budget stop: hand it back so
+		// the task stays resumable instead of being reported as a failed run.
+		if err := ctx.Err(); err != nil {
 			tw.handleInterrupting(err)
 			return err
 		}
 
-		// empty queue for subtasks means that task is done
+		if runCtx.Err() != nil {
+			stopReason = fmt.Sprintf("task run budget of %s is exhausted", maxTaskRunDuration)
+			break
+		}
+
+		st, err := tw.stc.PopSubtask(runCtx, tw)
+		if err != nil {
+			return tw.parkForInput(fmt.Errorf("failed to pop subtask for the task %d: %w", tw.taskCtx.TaskID, err))
+		}
+
+		// empty queue for subtasks means the plan is exhausted and the task is done
 		if st == nil {
 			break
 		}
 
-		if err := st.Run(ctx); err != nil {
-			tw.handleInterrupting(err)
-			return err
+		executed++
+
+		runErr := tw.runSubtask(runCtx, st)
+		budgeted := errors.Is(runErr, errRunBudget) || runCtx.Err() != nil
+
+		// pass through if task is waiting from back status propagation. A stop we
+		// caused ourselves is excluded: a timed out subtask parks the task on its
+		// way out, and that parking must not survive a run with a spent budget.
+		if tw.IsWaiting() {
+			if !budgeted {
+				return nil
+			}
+			// The run is still going, so the row should say so rather than advertise
+			// an input prompt nobody is waiting on.
+			if err := tw.SetStatus(ctx, database.TaskStatusRunning); err != nil {
+				return tw.parkForInput(err)
+			}
 		}
 
-		// pass through if task is waiting from back status propagation
-		if tw.IsWaiting() {
-			return nil
-		} // otherwise subtask is done
+		if runErr != nil && !errors.Is(runErr, errRunBudget) {
+			if errors.Is(runErr, context.Canceled) {
+				tw.handleInterrupting(runErr)
+				return runErr
+			}
+			return tw.parkForInput(fmt.Errorf("subtask %d failed: %w", st.GetSubtaskID(), runErr))
+		}
 
-		if err := tw.stc.RefineSubtasks(ctx); err != nil {
+		// A failed subtask returns no error, so the outcome is read back from its
+		// status: a task that keeps failing has to stop rather than re-plan forever.
+		if runErr != nil || subtaskFailed(runCtx, st) {
+			consecutiveFailures++
+			if consecutiveFailures >= maxConsecutiveSubtaskFailures {
+				stopReason = fmt.Sprintf("%d subtasks in a row failed or timed out", consecutiveFailures)
+				break
+			}
+		} else {
+			consecutiveFailures = 0
+		}
+
+		// The budget can be spent by the very subtask that just ran. Stopping here
+		// is what keeps the run out of the re-planning paths below, which would
+		// park the task in Waiting on an expired context instead of finalizing it.
+		if runCtx.Err() != nil {
+			stopReason = fmt.Sprintf("task run budget of %s is exhausted", maxTaskRunDuration)
+			break
+		}
+
+		if executed >= maxSubtasksPerRun {
+			// A plan that is already exhausted is a completed run, not a truncated
+			// one. Only a cut-off with work still queued is reported as incomplete.
+			if tw.planHasRemainingSubtasks(runCtx) {
+				stopReason = fmt.Sprintf("subtask budget of %d is exhausted", maxSubtasksPerRun)
+			}
+			break
+		}
+
+		if err := tw.stc.RefineSubtasks(runCtx); err != nil {
+			if runCtx.Err() != nil {
+				stopReason = fmt.Sprintf("task run budget of %s is exhausted", maxTaskRunDuration)
+				break
+			}
 			if errors.Is(err, context.Canceled) {
 				ctx = context.Background()
 			}
-			_ = tw.SetStatus(ctx, database.TaskStatusWaiting)
-			return fmt.Errorf("failed to refine subtasks list for the task %d: %w", tw.taskCtx.TaskID, err)
+			// Re-planning failed on a live run: park for user input rather than
+			// finalizing, since the plan may still be recoverable by steering.
+			return tw.parkForInput(fmt.Errorf("failed to refine subtasks list for the task %d: %w", tw.taskCtx.TaskID, err))
 		}
 	}
 
-	jobResult, err := tw.taskCtx.Provider.GetTaskResult(ctx, tw.taskCtx.TaskID)
+	return tw.finalizeRun(stopReason)
+}
+
+// runSubtask bounds a single subtask run so one stuck agent chain cannot consume
+// the whole task budget. A timed out subtask is forced terminal: the subtask's own
+// interrupt handler would otherwise leave it Waiting with no way back to running.
+func (tw *taskWorker) runSubtask(ctx context.Context, st SubtaskWorker) error {
+	subtaskCtx, cancel := context.WithTimeout(ctx, maxSubtaskRunDuration)
+	defer cancel()
+
+	err := st.Run(subtaskCtx)
+
+	// Only our own budget counts as a run-budget stop. A provider with an inner
+	// deadline returns the same sentinel without breaching the subtask budget, and
+	// labelling it as one would stop the run for a timeout it never caused.
+	if !errors.Is(err, context.DeadlineExceeded) || subtaskCtx.Err() == nil {
+		return err
+	}
+
+	setCtx, setCancel := context.WithTimeout(context.Background(), maxSubtaskRunDuration)
+	defer setCancel()
+	if setErr := st.SetStatus(setCtx, database.SubtaskStatusFailed); setErr != nil {
+		// Without this write the subtask row stays Running and reload resets it to
+		// Created, which re-queues the subtask that just timed out.
+		logrus.WithContext(ctx).WithError(setErr).WithField("subtask_id", st.GetSubtaskID()).
+			Error("failed to force the timed out subtask into a terminal state")
+	}
+
+	return fmt.Errorf("subtask %d exceeded run budget %s: %w", st.GetSubtaskID(), maxSubtaskRunDuration, errRunBudget)
+}
+
+func subtaskFailed(ctx context.Context, st SubtaskWorker) bool {
+	status, err := st.GetStatus(ctx)
+	return err == nil && status == database.SubtaskStatusFailed
+}
+
+// planHasRemainingSubtasks reports whether planned subtasks are still queued. It
+// separates a run that exhausted its plan, which reached its objective, from one
+// the subtask budget truncated mid-plan, which did not.
+func (tw *taskWorker) planHasRemainingSubtasks(ctx context.Context) bool {
+	remaining, err := tw.taskCtx.DB.GetTaskPlannedSubtasks(ctx, tw.taskCtx.TaskID)
 	if err != nil {
-		tw.handleInterrupting(err)
-		return fmt.Errorf("failed to get task %d result: %w", tw.taskCtx.TaskID, err)
+		// The plan cannot be read, so report a cut-off rather than claim success.
+		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
+			Warn("failed to read remaining subtasks, treating the run as truncated")
+		return true
+	}
+
+	return len(remaining) > 0
+}
+
+// finalizeRun reports the task outcome on its own budget so the task always
+// reaches a terminal state. The terminal write is deliberately independent of the
+// reporter call: the convergence guard is worthless if the one write that closes
+// the run is gated on the most failure-prone dependency in the stack.
+func (tw *taskWorker) finalizeRun(stopReason string) error {
+	if stopReason != "" {
+		logrus.WithFields(logrus.Fields{
+			"task_id": tw.taskCtx.TaskID,
+			"reason":  stopReason,
+		}).Warn("task run stopped before its plan was exhausted")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), maxSubtaskRunDuration)
+	defer cancel()
+	ctx = tools.PutAgentContext(ctx, database.MsgchainTypePrimaryAgent)
+
+	jobResult, err := tw.taskCtx.Provider.GetTaskResult(ctx, tw.taskCtx.TaskID)
+	if err != nil || jobResult == nil {
+		if err == nil {
+			err = errors.New("task result provider returned nothing")
+		}
+		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
+			Warn("failed to build the task report, falling back to a stub")
+		jobResult = &tools.TaskResult{
+			Success: tools.Bool(false),
+			Result:  fmt.Sprintf("The task run stopped before a report could be produced: %s", err),
+			Message: "failed to generate the task report",
+		}
+	}
+
+	// a truncated run did not reach its objective, so it must not report success
+	if stopReason != "" {
+		jobResult.Success = tools.Bool(false)
+		if jobResult.Message == "" {
+			jobResult.Message = stopReason
+		}
+	}
+
+	// The result and the status are what make the run legible later, so both are
+	// written before the report message and neither depends on the other.
+	if err := tw.SetResult(ctx, jobResult.Result); err != nil {
+		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
+			Error("failed to store the task result")
 	}
 
 	var taskStatus database.TaskStatus
@@ -346,14 +529,11 @@ func (tw *taskWorker) Run(ctx context.Context) error {
 		taskStatus = database.TaskStatusFailed
 	}
 
-	if err := tw.SetResult(ctx, jobResult.Result); err != nil {
-		tw.handleInterrupting(err)
-		return err
-	}
-
 	if err := tw.SetStatus(ctx, taskStatus); err != nil {
-		tw.handleInterrupting(err)
-		return err
+		// Last resort: the row must not stay Running with nothing left to run.
+		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
+			Error("failed to set the terminal task status")
+		_ = tw.SetStatus(context.Background(), taskStatus)
 	}
 
 	format := database.MsglogResultFormatMarkdown
@@ -367,16 +547,35 @@ func (tw *taskWorker) Run(ctx context.Context) error {
 		format,
 	)
 	if err != nil {
-		tw.handleInterrupting(err)
-		return fmt.Errorf("failed to put report for task %d: %w", tw.taskCtx.TaskID, err)
+		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
+			Error("failed to put the task report message")
 	}
 
 	return nil
 }
 
-// handleInterrupting sets this task (and the flow via taskWorker.SetStatus)
-// to Waiting when err is context.Canceled or context.DeadlineExceeded. Skips if the task is
-// already marked completed in memory (Finished/Failed) so we do not revive a finished task.
+// parkForInput leaves the task in Waiting so a user can steer it back. Every
+// error exit from Run goes through here: leaving the row in Running would strand
+// it, because nothing else writes a status for a task whose run stopped early.
+func (tw *taskWorker) parkForInput(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if errSt := tw.SetStatus(resetCtx, database.TaskStatusWaiting); errSt != nil {
+		logrus.WithError(errSt).WithField("task_id", tw.taskCtx.TaskID).
+			Warn("failed to set task waiting after a run error")
+	}
+
+	return err
+}
+
+// handleInterrupting parks the task when err is a user cancel or a deadline, and
+// skips it when the task is already marked completed (Finished/Failed) so we do
+// not revive a finished task.
 func (tw *taskWorker) handleInterrupting(err error) {
 	if err == nil {
 		return
@@ -388,12 +587,7 @@ func (tw *taskWorker) handleInterrupting(err error) {
 		return
 	}
 
-	resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if errSt := tw.SetStatus(resetCtx, database.TaskStatusWaiting); errSt != nil {
-		logrus.WithError(errSt).Warn("failed to set task waiting after run interrupt")
-	}
+	_ = tw.parkForInput(err)
 }
 
 func (tw *taskWorker) Finish(ctx context.Context) error {
