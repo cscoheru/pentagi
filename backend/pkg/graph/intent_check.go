@@ -19,8 +19,8 @@ import (
 // (pkg/providers/providers.go:1077) is ever made reusable, swap this for a
 // shared helper. TODO: dedupe with pkg/providers/providers.go callWithSetupRetries.
 const (
-	intentCheckMaxRetries  = 3
-	intentCheckRetryDelay  = 500 * time.Millisecond
+	intentCheckMaxRetries = 3
+	intentCheckRetryDelay = 500 * time.Millisecond
 )
 
 type intentDecision string

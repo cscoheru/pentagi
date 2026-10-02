@@ -173,3 +173,43 @@ func (p *optCapturingProvider) Call(ctx context.Context, opt pconfig.ProviderOpt
 	p.capture.opt = opt
 	return p.Provider.Call(ctx, opt, prompt)
 }
+
+// TestIntentCheckPromptScope pins the scope decision of the createFlow guard.
+//
+// The prompt is free text, so no behavioural test can see it: a mocked provider
+// decides the verdict, not the wording. Without an assertion on the wording the
+// scope can be silently widened or narrowed. Both directions matter — the guard
+// must stay able to reject greetings, and research/retrieval work must be
+// explicitly in scope (owner decision 2026-10-02).
+func TestIntentCheckPromptScope(t *testing.T) {
+	t.Parallel()
+
+	rendered, err := templates.NewDefaultPrompter().RenderTemplate(
+		templates.PromptTypeIntentCheck,
+		map[string]any{"Input": "研究荷香是如何产生的并写一份报告"},
+	)
+	require.NoError(t, err)
+
+	t.Run("research and retrieval work is in scope", func(t *testing.T) {
+		for _, want := range []string{
+			"open-source research",
+			"web/literature search",
+			"article collection",
+			"research topic",
+		} {
+			assert.Contains(t, rendered, want)
+		}
+	})
+
+	t.Run("guard still rejects greetings and small talk", func(t *testing.T) {
+		assert.Contains(t, rendered, "greeting, small talk")
+		assert.Contains(t, rendered, `"reject"`)
+		// A research request must not be classified as something to redirect
+		// away from: the reject branch may only ask for a concrete subject.
+		assert.NotContains(t, rendered, "concrete pentest target")
+	})
+
+	t.Run("user input is rendered verbatim", func(t *testing.T) {
+		assert.Contains(t, rendered, "研究荷香是如何产生的并写一份报告")
+	})
+}
