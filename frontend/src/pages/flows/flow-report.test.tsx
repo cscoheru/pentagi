@@ -66,7 +66,7 @@ describe('FlowReport load states', () => {
             loading: false,
         };
         reportResult.current = {
-            data: { agentReport: '# Final Report\n\nFrom pentAGI agent.' },
+            data: { flowReport: '# Final Report\n\nFrom pentAGI agent.' },
             error: undefined,
             loading: false,
         };
@@ -81,7 +81,7 @@ describe('FlowReport load states', () => {
         resetResults();
         summaryResult.current = { data: { flow: null }, error: new Error('boom'), loading: false };
         reportResult.current = {
-            data: { agentReport: 'should not be shown' },
+            data: { flowReport: 'should not be shown' },
             error: undefined,
             loading: false,
         };
@@ -99,7 +99,7 @@ describe('FlowReport load states', () => {
             loading: false,
         };
         reportResult.current = {
-            data: { agentReport: '# Puer.im Assessment\n\nReal content here.' },
+            data: { flowReport: '# Puer.im Assessment\n\nReal content here.' },
             error: undefined,
             loading: false,
         };

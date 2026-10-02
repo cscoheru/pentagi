@@ -454,7 +454,7 @@ function FlowReportDropdown() {
         AgentReportDocument,
         flowId ? { errorPolicy: 'all', variables: { flowId } } : skipToken,
     );
-    const agentReportContent = agentReportData?.agentReport ?? '';
+    const agentReportContent = agentReportData?.flowReport ?? '';
 
     const handleCopyToClipboard = async () => {
         if (isReportDisabled) {

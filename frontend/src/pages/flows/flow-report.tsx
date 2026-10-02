@@ -41,7 +41,7 @@ function FlowReport() {
 
     // Under `errorPolicy:'all'` a partial error arrives alongside a flow that loaded fine.
     const dataReady = !summaryQuery.loading && !!summaryQuery.data?.flow;
-    const reportContent = reportQuery.data?.agentReport ?? '';
+    const reportContent = reportQuery.data?.flowReport ?? '';
 
     useEffect(() => {
         pdfTriggered.current = false;

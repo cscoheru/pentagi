@@ -524,7 +524,7 @@ export const livePanelsCassette = (): Cassette =>
 
 const flowSummaryData: ResultOf<typeof FlowSummaryDocument> = { flow: FLOW_A };
 const agentReportData: ResultOf<typeof AgentReportDocument> = {
-    agentReport: '# Final Report\n\nBody of the e2e agent-written report.',
+    flowReport: '# Final Report\n\nBody of the e2e agent-written report.',
 };
 
 /** The Report menu only appears when the flow query returns tasks, so this overrides `flow` too. */
