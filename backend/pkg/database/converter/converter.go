@@ -90,15 +90,16 @@ func ConvertSubtasks(subtasks []database.Subtask) []*model.Subtask {
 
 func ConvertTask(task database.Task, subtasks []database.Subtask) *model.Task {
 	return &model.Task{
-		ID:        task.ID,
-		Title:     task.Title,
-		Status:    model.StatusType(task.Status),
-		Input:     task.Input,
-		Result:    task.Result,
-		FlowID:    task.FlowID,
-		Subtasks:  ConvertSubtasks(subtasks),
-		CreatedAt: task.CreatedAt.Time,
-		UpdatedAt: task.UpdatedAt.Time,
+		ID:         task.ID,
+		Title:      task.Title,
+		Status:     model.StatusType(task.Status),
+		Input:      task.Input,
+		Result:     task.Result,
+		FlowID:     task.FlowID,
+		OutputPath: database.NullStringToPtrString(task.OutputPath),
+		Subtasks:   ConvertSubtasks(subtasks),
+		CreatedAt:  task.CreatedAt.Time,
+		UpdatedAt:  task.UpdatedAt.Time,
 	}
 }
 

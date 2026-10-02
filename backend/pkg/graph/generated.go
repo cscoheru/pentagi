@@ -365,7 +365,7 @@ type ComplexityRoot struct {
 		CallAssistant           func(childComplexity int, flowID int64, assistantID int64, input string, useAgents bool, resourceIds []int64) int
 		CreateAPIToken          func(childComplexity int, input model.CreateAPITokenInput) int
 		CreateAssistant         func(childComplexity int, flowID int64, modelProvider string, input string, useAgents bool, resourceIds []int64) int
-		CreateFlow              func(childComplexity int, modelProvider string, input string, resourceIds []int64) int
+		CreateFlow              func(childComplexity int, modelProvider string, input string, resourceIds []int64, outputPath *string) int
 		CreateFlowTemplate      func(childComplexity int, input model.CreateFlowTemplateInput) int
 		CreateKnowledgeDocument func(childComplexity int, input model.CreateKnowledgeDocumentInput) int
 		CreatePrompt            func(childComplexity int, typeArg model.PromptType, template string) int
@@ -379,7 +379,7 @@ type ComplexityRoot struct {
 		DeletePrompt            func(childComplexity int, promptID int64) int
 		DeleteProvider          func(childComplexity int, providerID int64) int
 		FinishFlow              func(childComplexity int, flowID int64) int
-		PutUserInput            func(childComplexity int, flowID int64, input string, modelProvider *string, resourceIds []int64) int
+		PutUserInput            func(childComplexity int, flowID int64, input string, modelProvider *string, resourceIds []int64, outputPath *string) int
 		RenameFlow              func(childComplexity int, flowID int64, title string) int
 		RenameKnowledgeDocument func(childComplexity int, id string, question string) int
 		StopAssistant           func(childComplexity int, flowID int64, assistantID int64) int
@@ -622,15 +622,16 @@ type ComplexityRoot struct {
 	}
 
 	Task struct {
-		CreatedAt func(childComplexity int) int
-		FlowID    func(childComplexity int) int
-		ID        func(childComplexity int) int
-		Input     func(childComplexity int) int
-		Result    func(childComplexity int) int
-		Status    func(childComplexity int) int
-		Subtasks  func(childComplexity int) int
-		Title     func(childComplexity int) int
-		UpdatedAt func(childComplexity int) int
+		CreatedAt  func(childComplexity int) int
+		FlowID     func(childComplexity int) int
+		ID         func(childComplexity int) int
+		Input      func(childComplexity int) int
+		OutputPath func(childComplexity int) int
+		Result     func(childComplexity int) int
+		Status     func(childComplexity int) int
+		Subtasks   func(childComplexity int) int
+		Title      func(childComplexity int) int
+		UpdatedAt  func(childComplexity int) int
 	}
 
 	TaskExecutionStats struct {
@@ -755,8 +756,8 @@ type ComplexityRoot struct {
 }
 
 type MutationResolver interface {
-	CreateFlow(ctx context.Context, modelProvider string, input string, resourceIds []int64) (*model.Flow, error)
-	PutUserInput(ctx context.Context, flowID int64, input string, modelProvider *string, resourceIds []int64) (model.ResultType, error)
+	CreateFlow(ctx context.Context, modelProvider string, input string, resourceIds []int64, outputPath *string) (*model.Flow, error)
+	PutUserInput(ctx context.Context, flowID int64, input string, modelProvider *string, resourceIds []int64, outputPath *string) (model.ResultType, error)
 	StopFlow(ctx context.Context, flowID int64) (model.ResultType, error)
 	FinishFlow(ctx context.Context, flowID int64) (model.ResultType, error)
 	DeleteFlow(ctx context.Context, flowID int64) (model.ResultType, error)
@@ -2413,7 +2414,7 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 			return 0, false
 		}
 
-		return e.complexity.Mutation.CreateFlow(childComplexity, args["modelProvider"].(string), args["input"].(string), args["resourceIds"].([]int64)), true
+		return e.complexity.Mutation.CreateFlow(childComplexity, args["modelProvider"].(string), args["input"].(string), args["resourceIds"].([]int64), args["outputPath"].(*string)), true
 
 	case "Mutation.createFlowTemplate":
 		if e.complexity.Mutation.CreateFlowTemplate == nil {
@@ -2581,7 +2582,7 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 			return 0, false
 		}
 
-		return e.complexity.Mutation.PutUserInput(childComplexity, args["flowId"].(int64), args["input"].(string), args["modelProvider"].(*string), args["resourceIds"].([]int64)), true
+		return e.complexity.Mutation.PutUserInput(childComplexity, args["flowId"].(int64), args["input"].(string), args["modelProvider"].(*string), args["resourceIds"].([]int64), args["outputPath"].(*string)), true
 
 	case "Mutation.renameFlow":
 		if e.complexity.Mutation.RenameFlow == nil {
@@ -4227,6 +4228,13 @@ func (e *executableSchema) Complexity(typeName, field string, childComplexity in
 
 		return e.complexity.Task.Input(childComplexity), true
 
+	case "Task.outputPath":
+		if e.complexity.Task.OutputPath == nil {
+			break
+		}
+
+		return e.complexity.Task.OutputPath(childComplexity), true
+
 	case "Task.result":
 		if e.complexity.Task.Result == nil {
 			break
@@ -5428,6 +5436,11 @@ func (ec *executionContext) field_Mutation_createFlow_args(ctx context.Context, 
 		return nil, err
 	}
 	args["resourceIds"] = arg2
+	arg3, err := ec.field_Mutation_createFlow_argsOutputPath(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["outputPath"] = arg3
 	return args, nil
 }
 func (ec *executionContext) field_Mutation_createFlow_argsModelProvider(
@@ -5493,6 +5506,28 @@ func (ec *executionContext) field_Mutation_createFlow_argsResourceIds(
 	}
 
 	var zeroVal []int64
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Mutation_createFlow_argsOutputPath(
+	ctx context.Context,
+	rawArgs map[string]interface{},
+) (*string, error) {
+	// We won't call the directive if the argument is null.
+	// Set call_argument_directives_with_null to true to call directives
+	// even if the argument is null.
+	_, ok := rawArgs["outputPath"]
+	if !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("outputPath"))
+	if tmp, ok := rawArgs["outputPath"]; ok {
+		return ec.unmarshalOString2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
 	return zeroVal, nil
 }
 
@@ -6011,6 +6046,11 @@ func (ec *executionContext) field_Mutation_putUserInput_args(ctx context.Context
 		return nil, err
 	}
 	args["resourceIds"] = arg3
+	arg4, err := ec.field_Mutation_putUserInput_argsOutputPath(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["outputPath"] = arg4
 	return args, nil
 }
 func (ec *executionContext) field_Mutation_putUserInput_argsFlowID(
@@ -6098,6 +6138,28 @@ func (ec *executionContext) field_Mutation_putUserInput_argsResourceIds(
 	}
 
 	var zeroVal []int64
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Mutation_putUserInput_argsOutputPath(
+	ctx context.Context,
+	rawArgs map[string]interface{},
+) (*string, error) {
+	// We won't call the directive if the argument is null.
+	// Set call_argument_directives_with_null to true to call directives
+	// even if the argument is null.
+	_, ok := rawArgs["outputPath"]
+	if !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("outputPath"))
+	if tmp, ok := rawArgs["outputPath"]; ok {
+		return ec.unmarshalOString2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
 	return zeroVal, nil
 }
 
@@ -18600,7 +18662,7 @@ func (ec *executionContext) _Mutation_createFlow(ctx context.Context, field grap
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Mutation().CreateFlow(rctx, fc.Args["modelProvider"].(string), fc.Args["input"].(string), fc.Args["resourceIds"].([]int64))
+		return ec.resolvers.Mutation().CreateFlow(rctx, fc.Args["modelProvider"].(string), fc.Args["input"].(string), fc.Args["resourceIds"].([]int64), fc.Args["outputPath"].(*string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -18671,7 +18733,7 @@ func (ec *executionContext) _Mutation_putUserInput(ctx context.Context, field gr
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Mutation().PutUserInput(rctx, fc.Args["flowId"].(int64), fc.Args["input"].(string), fc.Args["modelProvider"].(*string), fc.Args["resourceIds"].([]int64))
+		return ec.resolvers.Mutation().PutUserInput(rctx, fc.Args["flowId"].(int64), fc.Args["input"].(string), fc.Args["modelProvider"].(*string), fc.Args["resourceIds"].([]int64), fc.Args["outputPath"].(*string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -23773,6 +23835,8 @@ func (ec *executionContext) fieldContext_Query_tasks(ctx context.Context, field 
 				return ec.fieldContext_Task_result(ctx, field)
 			case "flowId":
 				return ec.fieldContext_Task_flowId(ctx, field)
+			case "outputPath":
+				return ec.fieldContext_Task_outputPath(ctx, field)
 			case "subtasks":
 				return ec.fieldContext_Task_subtasks(ctx, field)
 			case "createdAt":
@@ -27779,6 +27843,8 @@ func (ec *executionContext) fieldContext_Subscription_taskCreated(ctx context.Co
 				return ec.fieldContext_Task_result(ctx, field)
 			case "flowId":
 				return ec.fieldContext_Task_flowId(ctx, field)
+			case "outputPath":
+				return ec.fieldContext_Task_outputPath(ctx, field)
 			case "subtasks":
 				return ec.fieldContext_Task_subtasks(ctx, field)
 			case "createdAt":
@@ -27868,6 +27934,8 @@ func (ec *executionContext) fieldContext_Subscription_taskUpdated(ctx context.Co
 				return ec.fieldContext_Task_result(ctx, field)
 			case "flowId":
 				return ec.fieldContext_Task_flowId(ctx, field)
+			case "outputPath":
+				return ec.fieldContext_Task_outputPath(ctx, field)
 			case "subtasks":
 				return ec.fieldContext_Task_subtasks(ctx, field)
 			case "createdAt":
@@ -31416,6 +31484,47 @@ func (ec *executionContext) fieldContext_Task_flowId(_ context.Context, field gr
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Task_outputPath(ctx context.Context, field graphql.CollectedField, obj *model.Task) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Task_outputPath(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (interface{}, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.OutputPath, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Task_outputPath(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Task",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -42137,6 +42246,8 @@ func (ec *executionContext) _Task(ctx context.Context, sel ast.SelectionSet, obj
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "outputPath":
+			out.Values[i] = ec._Task_outputPath(ctx, field, obj)
 		case "subtasks":
 			out.Values[i] = ec._Task_subtasks(ctx, field, obj)
 		case "createdAt":

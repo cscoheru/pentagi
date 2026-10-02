@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 )
 
 const createTask = `-- name: CreateTask :one
@@ -14,18 +15,20 @@ INSERT INTO tasks (
   status,
   title,
   input,
+  output_path,
   flow_id
 ) VALUES (
-  $1, $2, $3, $4
+  $1, $2, $3, $4, $5
 )
-RETURNING id, status, title, input, result, flow_id, created_at, updated_at
+RETURNING id, status, title, input, result, flow_id, created_at, updated_at, output_path
 `
 
 type CreateTaskParams struct {
-	Status TaskStatus `json:"status"`
-	Title  string     `json:"title"`
-	Input  string     `json:"input"`
-	FlowID int64      `json:"flow_id"`
+	Status     TaskStatus     `json:"status"`
+	Title      string         `json:"title"`
+	Input      string         `json:"input"`
+	OutputPath sql.NullString `json:"output_path"`
+	FlowID     int64          `json:"flow_id"`
 }
 
 func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, error) {
@@ -33,6 +36,7 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		arg.Status,
 		arg.Title,
 		arg.Input,
+		arg.OutputPath,
 		arg.FlowID,
 	)
 	var i Task
@@ -45,13 +49,14 @@ func (q *Queries) CreateTask(ctx context.Context, arg CreateTaskParams) (Task, e
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
 
 const getFlowTask = `-- name: GetFlowTask :one
 SELECT
-  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at
+  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at, t.output_path
 FROM tasks t
 INNER JOIN flows f ON t.flow_id = f.id
 WHERE t.id = $1 AND t.flow_id = $2 AND f.deleted_at IS NULL
@@ -74,13 +79,14 @@ func (q *Queries) GetFlowTask(ctx context.Context, arg GetFlowTaskParams) (Task,
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
 
 const getFlowTasks = `-- name: GetFlowTasks :many
 SELECT
-  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at
+  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at, t.output_path
 FROM tasks t
 INNER JOIN flows f ON t.flow_id = f.id
 WHERE t.flow_id = $1 AND f.deleted_at IS NULL
@@ -105,6 +111,7 @@ func (q *Queries) GetFlowTasks(ctx context.Context, flowID int64) ([]Task, error
 			&i.FlowID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OutputPath,
 		); err != nil {
 			return nil, err
 		}
@@ -121,7 +128,7 @@ func (q *Queries) GetFlowTasks(ctx context.Context, flowID int64) ([]Task, error
 
 const getTask = `-- name: GetTask :one
 SELECT
-  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at
+  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at, t.output_path
 FROM tasks t
 WHERE t.id = $1
 `
@@ -138,13 +145,14 @@ func (q *Queries) GetTask(ctx context.Context, id int64) (Task, error) {
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
 
 const getUserFlowTask = `-- name: GetUserFlowTask :one
 SELECT
-  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at
+  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at, t.output_path
 FROM tasks t
 INNER JOIN flows f ON t.flow_id = f.id
 INNER JOIN users u ON f.user_id = u.id
@@ -169,13 +177,14 @@ func (q *Queries) GetUserFlowTask(ctx context.Context, arg GetUserFlowTaskParams
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
 
 const getUserFlowTasks = `-- name: GetUserFlowTasks :many
 SELECT
-  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at
+  t.id, t.status, t.title, t.input, t.result, t.flow_id, t.created_at, t.updated_at, t.output_path
 FROM tasks t
 INNER JOIN flows f ON t.flow_id = f.id
 INNER JOIN users u ON f.user_id = u.id
@@ -206,6 +215,7 @@ func (q *Queries) GetUserFlowTasks(ctx context.Context, arg GetUserFlowTasksPara
 			&i.FlowID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OutputPath,
 		); err != nil {
 			return nil, err
 		}
@@ -224,7 +234,7 @@ const updateTaskFailedResult = `-- name: UpdateTaskFailedResult :one
 UPDATE tasks
 SET status = 'failed', result = $1
 WHERE id = $2
-RETURNING id, status, title, input, result, flow_id, created_at, updated_at
+RETURNING id, status, title, input, result, flow_id, created_at, updated_at, output_path
 `
 
 type UpdateTaskFailedResultParams struct {
@@ -244,6 +254,7 @@ func (q *Queries) UpdateTaskFailedResult(ctx context.Context, arg UpdateTaskFail
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
@@ -252,7 +263,7 @@ const updateTaskFinishedResult = `-- name: UpdateTaskFinishedResult :one
 UPDATE tasks
 SET status = 'finished', result = $1
 WHERE id = $2
-RETURNING id, status, title, input, result, flow_id, created_at, updated_at
+RETURNING id, status, title, input, result, flow_id, created_at, updated_at, output_path
 `
 
 type UpdateTaskFinishedResultParams struct {
@@ -272,6 +283,7 @@ func (q *Queries) UpdateTaskFinishedResult(ctx context.Context, arg UpdateTaskFi
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
@@ -280,7 +292,7 @@ const updateTaskResult = `-- name: UpdateTaskResult :one
 UPDATE tasks
 SET result = $1
 WHERE id = $2
-RETURNING id, status, title, input, result, flow_id, created_at, updated_at
+RETURNING id, status, title, input, result, flow_id, created_at, updated_at, output_path
 `
 
 type UpdateTaskResultParams struct {
@@ -300,6 +312,7 @@ func (q *Queries) UpdateTaskResult(ctx context.Context, arg UpdateTaskResultPara
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }
@@ -308,7 +321,7 @@ const updateTaskStatus = `-- name: UpdateTaskStatus :one
 UPDATE tasks
 SET status = $1
 WHERE id = $2
-RETURNING id, status, title, input, result, flow_id, created_at, updated_at
+RETURNING id, status, title, input, result, flow_id, created_at, updated_at, output_path
 `
 
 type UpdateTaskStatusParams struct {
@@ -328,6 +341,7 @@ func (q *Queries) UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusPara
 		&i.FlowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OutputPath,
 	)
 	return i, err
 }

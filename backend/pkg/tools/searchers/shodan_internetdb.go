@@ -58,7 +58,7 @@ func NewShodanInternetDB(cfg *config.Config) Searcher {
 }
 
 func (s *shodanInternetDB) Engine() database.SearchengineType {
-	return database.SearchengineTypeShodanInternetDB
+	return database.SearchengineTypeShodanInternetdb
 }
 
 // IsAvailable is always true: InternetDB is a free public API with no key. A custom

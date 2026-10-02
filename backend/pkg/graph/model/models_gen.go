@@ -496,15 +496,16 @@ type SubtaskExecutionStats struct {
 }
 
 type Task struct {
-	ID        int64      `json:"id"`
-	Title     string     `json:"title"`
-	Status    StatusType `json:"status"`
-	Input     string     `json:"input"`
-	Result    string     `json:"result"`
-	FlowID    int64      `json:"flowId"`
-	Subtasks  []*Subtask `json:"subtasks,omitempty"`
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt time.Time  `json:"updatedAt"`
+	ID         int64      `json:"id"`
+	Title      string     `json:"title"`
+	Status     StatusType `json:"status"`
+	Input      string     `json:"input"`
+	Result     string     `json:"result"`
+	FlowID     int64      `json:"flowId"`
+	OutputPath *string    `json:"outputPath,omitempty"`
+	Subtasks   []*Subtask `json:"subtasks,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 }
 
 type TaskExecutionStats struct {

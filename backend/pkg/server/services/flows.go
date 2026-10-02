@@ -9,6 +9,7 @@ import (
 
 	"pentagi/pkg/controller"
 	"pentagi/pkg/database"
+	"pentagi/pkg/flowfiles"
 	"pentagi/pkg/graph/subscriptions"
 	"pentagi/pkg/providers"
 	"pentagi/pkg/providers/provider"
@@ -365,7 +366,19 @@ func (s *FlowService) CreateFlow(c *gin.Context) {
 		return
 	}
 
-	fw, err := s.fc.CreateFlow(c, int64(uid), createFlow.Input, prvname, prvtype, createFlow.Functions, dbResources)
+	// The declared output path names a file the framework later writes, so it is checked
+	// before a flow is created. See flowfiles.ValidateTaskOutputPath.
+	outPath := ""
+	if createFlow.OutputPath != nil {
+		outPath, err = flowfiles.ValidateTaskOutputPath(*createFlow.OutputPath)
+		if err != nil {
+			logger.FromContext(c).WithError(err).Errorf("error validating output path")
+			response.Error(c, response.ErrFlowsInvalidRequest, err)
+			return
+		}
+	}
+
+	fw, err := s.fc.CreateFlow(c, int64(uid), createFlow.Input, outPath, prvname, prvtype, createFlow.Functions, dbResources)
 	if err != nil {
 		logger.FromContext(c).WithError(err).Errorf("error creating flow")
 		response.Error(c, response.ErrInternal, err)
@@ -497,7 +510,19 @@ func (s *FlowService) PatchFlow(c *gin.Context) {
 			return
 		}
 
-		if err := fw.PutInput(c, *patchFlow.Input, prv, dbResources); err != nil {
+		// See flowfiles.ValidateTaskOutputPath: user input that names a file the framework
+		// writes is checked before it reaches a running flow.
+		outPath := ""
+		if patchFlow.OutputPath != nil {
+			outPath, err = flowfiles.ValidateTaskOutputPath(*patchFlow.OutputPath)
+			if err != nil {
+				logger.FromContext(c).WithError(err).Errorf("error validating output path")
+				response.Error(c, response.ErrFlowsInvalidRequest, err)
+				return
+			}
+		}
+
+		if err := fw.PutInput(c, *patchFlow.Input, outPath, prv, dbResources); err != nil {
 			logger.FromContext(c).WithError(err).Errorf("error sending input to flow")
 			response.Error(c, response.ErrInternal, err)
 			return

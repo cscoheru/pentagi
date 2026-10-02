@@ -41,9 +41,10 @@ INSERT INTO tasks (
   status,
   title,
   input,
+  output_path,
   flow_id
 ) VALUES (
-  $1, $2, $3, $4
+  $1, $2, $3, $4, $5
 )
 RETURNING *;
 

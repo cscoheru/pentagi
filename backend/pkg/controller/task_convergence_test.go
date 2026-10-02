@@ -78,12 +78,15 @@ func (f *fakeSubtask) Run(ctx context.Context) error {
 type runFakeQuerier struct {
 	database.Querier
 
-	statuses   []database.TaskStatus
-	results    []string
-	planned    []database.Subtask
-	statusErr  error
-	resultErr  error
-	plannedErr error
+	statuses  []database.TaskStatus
+	results   []string
+	planned   []database.Subtask
+	statusErr error
+	resultErr error
+	// resultErrOnce fails only the first result write and then clears itself, so a test
+	// can drive the retry path without making every write fail.
+	resultErrOnce error
+	plannedErr    error
 }
 
 func (q *runFakeQuerier) UpdateTaskStatus(
@@ -103,6 +106,11 @@ func (q *runFakeQuerier) GetTaskSubtasks(context.Context, int64) ([]database.Sub
 func (q *runFakeQuerier) UpdateTaskResult(
 	_ context.Context, arg database.UpdateTaskResultParams,
 ) (database.Task, error) {
+	if q.resultErrOnce != nil {
+		err := q.resultErrOnce
+		q.resultErrOnce = nil
+		return database.Task{}, err
+	}
 	if q.resultErr != nil {
 		return database.Task{}, q.resultErr
 	}
@@ -226,6 +234,12 @@ func lastStatus(q *runFakeQuerier) database.TaskStatus {
 
 // ---- runSubtask tests -------------------------------------------------------
 
+// runSubtask is exercised on its own, but the termination logs read the task ID
+// from the worker's task context, which production always has.
+func newIsolatedWorker() *taskWorker {
+	return &taskWorker{taskCtx: &TaskContext{TaskID: 42}}
+}
+
 // A timed out subtask must end terminally. The subtask's own interrupt handler
 // parks it in Waiting, which would stall the whole flow with no way back.
 func TestRunSubtaskForcesTerminalStateOnDeadline(t *testing.T) {
@@ -235,7 +249,7 @@ func TestRunSubtaskForcesTerminalStateOnDeadline(t *testing.T) {
 	defer cancel()
 
 	st := &fakeSubtask{id: 270, status: database.SubtaskStatusRunning, blockUntilEnd: true}
-	err := (&taskWorker{}).runSubtask(ctx, st)
+	err := newIsolatedWorker().runSubtask(ctx, st)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errRunBudget)
@@ -253,7 +267,7 @@ func TestRunSubtaskTerminalWriteUsesLiveContext(t *testing.T) {
 	cancel()
 
 	st := &fakeSubtask{id: 1, runErr: context.DeadlineExceeded}
-	(&taskWorker{}).runSubtask(cancelled, st)
+	newIsolatedWorker().runSubtask(cancelled, st)
 
 	require.NotEmpty(t, st.setStatusErrAtCall)
 	for i, err := range st.setStatusErrAtCall {
@@ -271,7 +285,7 @@ func TestRunSubtaskBudgetErrorIsNotDeadlineExceeded(t *testing.T) {
 	defer cancel()
 
 	st := &fakeSubtask{id: 1, blockUntilEnd: true}
-	err := (&taskWorker{}).runSubtask(ctx, st)
+	err := newIsolatedWorker().runSubtask(ctx, st)
 
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, context.DeadlineExceeded))
@@ -286,7 +300,7 @@ func TestRunSubtaskForeignDeadlineIsNotABudgetStop(t *testing.T) {
 
 	st := &fakeSubtask{id: 1, runErr: context.DeadlineExceeded}
 
-	err := (&taskWorker{}).runSubtask(context.Background(), st)
+	err := newIsolatedWorker().runSubtask(context.Background(), st)
 
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.False(t, errors.Is(err, errRunBudget))
@@ -299,7 +313,7 @@ func TestRunSubtaskPassesThroughOtherErrors(t *testing.T) {
 	want := errors.New("boom")
 	st := &fakeSubtask{id: 1, runErr: want}
 
-	err := (&taskWorker{}).runSubtask(context.Background(), st)
+	err := newIsolatedWorker().runSubtask(context.Background(), st)
 
 	assert.ErrorIs(t, err, want)
 	assert.False(t, errors.Is(err, errRunBudget))
@@ -311,7 +325,7 @@ func TestRunSubtaskSuccessSetsNothing(t *testing.T) {
 
 	st := &fakeSubtask{id: 1, status: database.SubtaskStatusFinished}
 
-	assert.NoError(t, (&taskWorker{}).runSubtask(context.Background(), st))
+	assert.NoError(t, newIsolatedWorker().runSubtask(context.Background(), st))
 	assert.Empty(t, st.setStatuses)
 }
 
@@ -532,4 +546,80 @@ func tightenBudgets(task, subtask time.Duration) func() {
 	return func() {
 		maxTaskRunDuration, maxSubtaskRunDuration = prevTask, prevSubtask
 	}
+}
+
+// ---- budget / cancel discrimination ------------------------------------------
+
+// A user Stop and a spent budget both leave the parent and the run context dead.
+// Recording a Stop as a budget cut-off would report a failed run for something
+// the user chose, and would finalize a task that is meant to stay resumable.
+func TestRunExternalCancelParksInsteadOfFinalizing(t *testing.T) {
+	// Not parallel: this test tightens the package level budgets.
+	restore := tightenBudgets(time.Minute, time.Minute)
+	defer restore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	q := &runFakeQuerier{}
+	p := &runFakeProvider{result: &tools.TaskResult{Success: tools.Bool(true), Result: "findings"}}
+
+	st := &fakeSubtask{id: 1, blockUntilEnd: true}
+	st.onRun = cancel // the user stops the flow while the subtask is running
+	tw, _ := newRunWorker(q, p, &runFakeSTC{queue: []SubtaskWorker{st}})
+
+	err := tw.Run(ctx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, database.TaskStatusWaiting, lastStatus(q),
+		"a user cancel leaves the task resumable instead of finalizing it")
+	for _, status := range q.statuses {
+		assert.NotEqual(t, database.TaskStatusFailed, status,
+			"a user decision must never be recorded as a failed run")
+	}
+	assert.Empty(t, q.results, "a cancelled run has no report to write")
+}
+
+// The budget marker must not fire just because the run context is dead: a
+// cancelled parent makes runCtx.Err() non-nil too.
+func TestBudgetExhaustedRequiresAHealthyParent(t *testing.T) {
+	t.Parallel()
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+
+	runCtx, cancelRun := context.WithTimeout(context.Background(), time.Minute)
+	defer cancelRun()
+
+	assert.False(t, budgetExhausted(parent, runCtx), "a live run has not spent its budget")
+
+	cancelParent()
+	assert.False(t, budgetExhausted(parent, runCtx),
+		"a cancelled parent is a user decision, not a budget stop")
+
+	live, cancelLive := context.WithCancel(context.Background())
+	defer cancelLive()
+	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
+	defer cancelExpired()
+	<-expired.Done()
+
+	assert.True(t, budgetExhausted(live, expired), "an expired run with a live parent is a budget stop")
+}
+
+// The provider cause has to survive the budget marker, or a run that stopped on a
+// timeout is indistinguishable from one that stopped for any other reason.
+func TestRunSubtaskPreservesTheProviderCause(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	st := &fakeSubtask{id: 270, blockUntilEnd: true}
+	err := newIsolatedWorker().runSubtask(ctx, st)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errRunBudget)
+	assert.Contains(t, err.Error(), context.DeadlineExceeded.Error(),
+		"the original cause must stay readable on the error")
 }

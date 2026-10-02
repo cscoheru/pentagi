@@ -31,6 +31,9 @@ const (
 	MaxPullFiles         = 1000                   // files
 	MaxPullTotalSize     = 2 * 1024 * 1024 * 1024 // 2 GB
 	MaxFileNameLength    = 255
+	// TaskOutputPathMaxLen bounds a user-declared task output path. A report path is
+	// short; anything longer is a mistake or an attempt to smuggle data through the field.
+	TaskOutputPathMaxLen = 1024
 )
 
 type File struct {
@@ -152,6 +155,164 @@ func SanitizeContainerCachePath(containerPath string) (string, error) {
 	}
 
 	return path.Join(parts...), nil
+}
+
+// ReportMirrorPatterns match the report file names the orchestrator writes inside the
+// sandbox (/root/<title>_report.md, /root/<title>_assessment.md). They are how a mirrored
+// report is found when no contract path is on record.
+var ReportMirrorPatterns = []string{"*report*.md", "*assessment*.md"}
+
+// reportMirrorMaxBytes caps how much of a mirrored report is read into memory.
+//
+// The mirror directory also holds whatever the agent pulled into the sandbox, so a file
+// named like a report can be arbitrarily large. flowReport is a per-request read that used
+// to hold the whole file plus a string copy of it; the cap keeps one query from turning a
+// big cache entry into a memory spike. Oversized content is truncated with a marker rather
+// than skipped, because a silently empty report is the exact failure this mirror exists to
+// prevent.
+const reportMirrorMaxBytes = 20 << 20 // 20 MiB
+
+// truncationNotice is appended in place of the bytes that did not fit under the cap.
+const truncationNotice = "\n\n[report truncated at 20 MiB for display]\n"
+
+// readReportCapped reads at most reportMirrorMaxBytes of p, marking anything truncated.
+//
+// The limit is applied to the stream, not to a fully buffered file: capping after
+// os.ReadFile would allocate the whole entry first and cap nothing.
+func readReportCapped(p string) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	content, err := io.ReadAll(io.LimitReader(f, reportMirrorMaxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > reportMirrorMaxBytes {
+		content = append(content[:reportMirrorMaxBytes], []byte(truncationNotice)...)
+	}
+	return content, nil
+}
+
+// LargestReportMirror returns the content of the biggest report-like file mirrored on the
+// host for flowID, or "" when there is none.
+//
+// The mirror is what survives the flow ending. A stopped container cannot be read back, so
+// without it the report of every finished flow is empty even though the artifact exists —
+// it is merely unreachable. Candidates are the explicit contract paths (a task may declare
+// any name, such as /root/findings.md, which no pattern would match) plus every file under
+// the mirror directory matching ReportMirrorPatterns. The biggest wins because that is
+// almost always the consolidated final report rather than an intermediate draft, which is
+// the rule the in-container scan already uses.
+//
+// Unlike that scan, no minimum size is applied here: the comparison against the container
+// copy already prefers the real report over a stub, and dropping short files outright would
+// leave a small report with no way back at all.
+func LargestReportMirror(dataDir string, flowID uint64, contractPaths []string) (string, error) {
+	dir := FlowContainerDir(dataDir, flowID)
+
+	var (
+		best     string
+		bestSize int64
+	)
+
+	consider := func(p string) {
+		info, err := os.Stat(p)
+		if err != nil || !info.Mode().IsRegular() {
+			return
+		}
+		if info.Size() <= bestSize {
+			return
+		}
+		content, err := readReportCapped(p)
+		if err != nil {
+			return
+		}
+		best, bestSize = string(content), info.Size()
+	}
+
+	for _, contractPath := range contractPaths {
+		// The same validator the writer used. A path that was never writable is not a
+		// readable candidate either, and normalizing it here instead would silently aim
+		// the lookup at some other file inside the mirror.
+		validated, err := ValidateTaskOutputPath(contractPath)
+		if err != nil || validated == "" {
+			continue
+		}
+		sanitized, err := SanitizeContainerCachePath(validated)
+		if err != nil {
+			continue
+		}
+		consider(filepath.Join(dir, sanitized))
+	}
+
+	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			// A missing or unreadable mirror directory just means there is no report yet.
+			return nil
+		}
+		for _, pattern := range ReportMirrorPatterns {
+			if matched, _ := filepath.Match(pattern, d.Name()); matched {
+				consider(p)
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("failed to scan the report mirror directory: %w", err)
+	}
+
+	return best, nil
+}
+
+// ValidateTaskOutputPath checks a user-declared task output path before it is stored on a
+// task or used to write anything, and returns the path to store.
+//
+// The path is the absolute location inside the sandbox where the framework must write the
+// task result (for example /root/report.md). Requiring an absolute path is deliberate: a
+// relative path would make "where is the report?" depend on the agent's working directory,
+// which is the ambiguity the structured field exists to remove.
+//
+// An empty path is valid and means "not declared" — the task then falls back to the
+// canonical per-task path.
+//
+// Every segment is checked with validatePathComponent, so `..` traversal, empty segments,
+// control bytes and shell/Windows-unsafe characters are rejected before the value reaches
+// a tar header or a shell command. Segments must already be clean: the path is stored and
+// used verbatim, so a value that would need rewriting is refused instead of silently
+// normalized into a different path than the one the user declared.
+func ValidateTaskOutputPath(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+
+	if len(p) > TaskOutputPathMaxLen {
+		return "", fmt.Errorf("output path is too long (max %d bytes)", TaskOutputPathMaxLen)
+	}
+
+	if !strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("output path must be absolute")
+	}
+
+	parts := strings.Split(p, "/")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("output path must name a file")
+	}
+
+	// parts[0] is the empty prefix of an absolute path.
+	for _, part := range parts[1:] {
+		cleanPart, err := validatePathComponent(part)
+		if err != nil {
+			return "", fmt.Errorf("invalid output path %q: %w", p, err)
+		}
+		if cleanPart != part {
+			return "", fmt.Errorf("invalid output path %q: path segments must not have surrounding whitespace", p)
+		}
+	}
+
+	return p, nil
 }
 
 func validatePathComponent(component string) (string, error) {

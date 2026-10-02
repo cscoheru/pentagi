@@ -9,7 +9,7 @@ import (
 )
 
 type TaskController interface {
-	CreateTask(ctx context.Context, input string, updater FlowUpdater) (TaskWorker, error)
+	CreateTask(ctx context.Context, input string, outputPath string, updater FlowUpdater) (TaskWorker, error)
 	LoadTasks(ctx context.Context, flowID int64, updater FlowUpdater) error
 	ListTasks(ctx context.Context) []TaskWorker
 	GetTask(ctx context.Context, taskID int64) (TaskWorker, error)
@@ -66,12 +66,13 @@ func (tc *taskController) LoadTasks(
 func (tc *taskController) CreateTask(
 	ctx context.Context,
 	input string,
+	outputPath string,
 	updater FlowUpdater,
 ) (TaskWorker, error) {
 	tc.mx.Lock()
 	defer tc.mx.Unlock()
 
-	tw, err := NewTaskWorker(ctx, tc.flowCtx, input, updater)
+	tw, err := NewTaskWorker(ctx, tc.flowCtx, input, outputPath, updater)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create task worker: %w", err)
 	}

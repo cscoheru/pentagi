@@ -43,12 +43,16 @@ type taskWorker struct {
 	updater   FlowUpdater
 	completed bool
 	waiting   bool
+	// runStart is set when a run begins and used only to report elapsed time in
+	// the termination logs. A worker that never ran reports no elapsed value.
+	runStart time.Time
 }
 
 func NewTaskWorker(
 	ctx context.Context,
 	flowCtx *FlowContext,
 	input string,
+	outputPath string,
 	updater FlowUpdater,
 ) (TaskWorker, error) {
 	ctx, span := obs.Observer.NewSpan(ctx, obs.SpanKindInternal, "controller.NewTaskWorker")
@@ -62,10 +66,11 @@ func NewTaskWorker(
 	}
 
 	task, err := flowCtx.DB.CreateTask(ctx, database.CreateTaskParams{
-		Status: database.TaskStatusCreated,
-		Title:  title,
-		Input:  input,
-		FlowID: flowCtx.FlowID,
+		Status:     database.TaskStatusCreated,
+		Title:      title,
+		Input:      input,
+		OutputPath: sql.NullString{String: outputPath, Valid: outputPath != ""},
+		FlowID:     flowCtx.FlowID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create task in DB: %w", err)
@@ -78,6 +83,7 @@ func NewTaskWorker(
 		TaskID:      task.ID,
 		TaskTitle:   title,
 		TaskInput:   input,
+		OutputPath:  outputPath,
 	}
 	stc := NewSubtaskController(taskCtx)
 
@@ -129,6 +135,9 @@ func LoadTaskWorker(
 		TaskID:      task.ID,
 		TaskTitle:   task.Title,
 		TaskInput:   task.Input,
+		// A NULL output_path is loaded as "" (not declared), matching what
+		// NewTaskWorker stores for an empty declaration.
+		OutputPath: task.OutputPath.String,
 	}
 
 	stc := NewSubtaskController(taskCtx)
@@ -187,6 +196,18 @@ func (tw *taskWorker) IsWaiting() bool {
 	defer tw.mx.RUnlock()
 
 	return tw.waiting
+}
+
+// elapsed reports how long the current run has been going, for the termination
+// logs. It is empty for a worker that never entered Run.
+func (tw *taskWorker) elapsed() string {
+	tw.mx.RLock()
+	defer tw.mx.RUnlock()
+
+	if tw.runStart.IsZero() {
+		return ""
+	}
+	return time.Since(tw.runStart).Round(time.Millisecond).String()
 }
 
 func (tw *taskWorker) GetStatus(ctx context.Context) (database.TaskStatus, error) {
@@ -308,6 +329,11 @@ const (
 	// maxConsecutiveSubtaskFailures stops the run once this many subtasks in a
 	// row failed or timed out.
 	maxConsecutiveSubtaskFailures = 2
+	// resultWriteRetryTimeout bounds the one retry of a result write that failed on
+	// the finalize budget. It has to stay bounded: an open-ended retry on a dead
+	// database would block before SetStatus and strand the row in Running, which is
+	// the very non-terminal state the convergence guards exist to prevent.
+	resultWriteRetryTimeout = 30 * time.Second
 )
 
 // The two wall clock budgets are vars so tests can tighten them to milliseconds;
@@ -326,6 +352,10 @@ var errRunBudget = errors.New("task run budget exhausted")
 
 func (tw *taskWorker) Run(ctx context.Context) error {
 	ctx = tools.PutAgentContext(ctx, database.MsgchainTypePrimaryAgent)
+
+	tw.mx.Lock()
+	tw.runStart = time.Now()
+	tw.mx.Unlock()
 
 	runCtx, cancel := context.WithTimeout(ctx, maxTaskRunDuration)
 	defer cancel()
@@ -359,7 +389,7 @@ func (tw *taskWorker) Run(ctx context.Context) error {
 		executed++
 
 		runErr := tw.runSubtask(runCtx, st)
-		budgeted := errors.Is(runErr, errRunBudget) || runCtx.Err() != nil
+		budgeted := errors.Is(runErr, errRunBudget) || budgetExhausted(ctx, runCtx)
 
 		// pass through if task is waiting from back status propagation. A stop we
 		// caused ourselves is excluded: a timed out subtask parks the task on its
@@ -398,7 +428,7 @@ func (tw *taskWorker) Run(ctx context.Context) error {
 		// The budget can be spent by the very subtask that just ran. Stopping here
 		// is what keeps the run out of the re-planning paths below, which would
 		// park the task in Waiting on an expired context instead of finalizing it.
-		if runCtx.Err() != nil {
+		if budgetExhausted(ctx, runCtx) {
 			stopReason = fmt.Sprintf("task run budget of %s is exhausted", maxTaskRunDuration)
 			break
 		}
@@ -413,7 +443,13 @@ func (tw *taskWorker) Run(ctx context.Context) error {
 		}
 
 		if err := tw.stc.RefineSubtasks(runCtx); err != nil {
-			if runCtx.Err() != nil {
+			// A stop from outside is still resumable; only our own spent budget turns
+			// this into a terminal cut-off.
+			if ctx.Err() != nil {
+				tw.handleInterrupting(ctx.Err())
+				return ctx.Err()
+			}
+			if budgetExhausted(ctx, runCtx) {
 				stopReason = fmt.Sprintf("task run budget of %s is exhausted", maxTaskRunDuration)
 				break
 			}
@@ -436,6 +472,7 @@ func (tw *taskWorker) runSubtask(ctx context.Context, st SubtaskWorker) error {
 	subtaskCtx, cancel := context.WithTimeout(ctx, maxSubtaskRunDuration)
 	defer cancel()
 
+	subtaskStart := time.Now()
 	err := st.Run(subtaskCtx)
 
 	// Only our own budget counts as a run-budget stop. A provider with an inner
@@ -450,16 +487,40 @@ func (tw *taskWorker) runSubtask(ctx context.Context, st SubtaskWorker) error {
 	if setErr := st.SetStatus(setCtx, database.SubtaskStatusFailed); setErr != nil {
 		// Without this write the subtask row stays Running and reload resets it to
 		// Created, which re-queues the subtask that just timed out.
-		logrus.WithContext(ctx).WithError(setErr).WithField("subtask_id", st.GetSubtaskID()).
-			Error("failed to force the timed out subtask into a terminal state")
+		logrus.WithContext(ctx).WithError(setErr).WithFields(logrus.Fields{
+			"task_id":    tw.taskCtx.TaskID,
+			"subtask_id": st.GetSubtaskID(),
+			"budget":     "subtask_run",
+		}).Error("failed to force the timed out subtask into a terminal state")
 	}
 
-	return fmt.Errorf("subtask %d exceeded run budget %s: %w", st.GetSubtaskID(), maxSubtaskRunDuration, errRunBudget)
+	// The provider's own cause is reported but deliberately not wrapped: errRunBudget
+	// has to stay the only sentinel on the chain so the caller can tell our budget
+	// apart from a user cancel, which is a different state entirely.
+	logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+		"task_id":      tw.taskCtx.TaskID,
+		"subtask_id":   st.GetSubtaskID(),
+		"budget":       "subtask_run",
+		"budget_limit": maxSubtaskRunDuration.String(),
+		"elapsed":      time.Since(subtaskStart).Round(time.Millisecond).String(),
+		"stop_reason":  "subtask_run_budget_exhausted",
+		"final_status": database.SubtaskStatusFailed,
+	}).Warn("subtask exceeded its run budget and was forced terminal")
+
+	return fmt.Errorf("subtask %d exceeded run budget %s: %w (cause: %v)",
+		st.GetSubtaskID(), maxSubtaskRunDuration, errRunBudget, err)
 }
 
 func subtaskFailed(ctx context.Context, st SubtaskWorker) bool {
 	status, err := st.GetStatus(ctx)
 	return err == nil && status == database.SubtaskStatusFailed
+}
+
+// budgetExhausted reports that our own run budget ran out. A cancelled parent is
+// a user decision, and checking ctx first is what keeps a Stop from being written
+// up as a budget cut-off — two states that must never share a stop reason.
+func budgetExhausted(ctx, runCtx context.Context) bool {
+	return runCtx.Err() != nil && ctx.Err() == nil
 }
 
 // planHasRemainingSubtasks reports whether planned subtasks are still queued. It
@@ -483,9 +544,11 @@ func (tw *taskWorker) planHasRemainingSubtasks(ctx context.Context) bool {
 // the run is gated on the most failure-prone dependency in the stack.
 func (tw *taskWorker) finalizeRun(stopReason string) error {
 	if stopReason != "" {
-		logrus.WithFields(logrus.Fields{
-			"task_id": tw.taskCtx.TaskID,
-			"reason":  stopReason,
+		logrus.WithContext(context.Background()).WithFields(logrus.Fields{
+			"task_id":     tw.taskCtx.TaskID,
+			"budget":      "task_run",
+			"elapsed":     tw.elapsed(),
+			"stop_reason": stopReason,
 		}).Warn("task run stopped before its plan was exhausted")
 	}
 
@@ -517,9 +580,57 @@ func (tw *taskWorker) finalizeRun(stopReason string) error {
 
 	// The result and the status are what make the run legible later, so both are
 	// written before the report message and neither depends on the other.
+	emptyResult := jobResult.Result == ""
+	if emptyResult {
+		// A blank result is its own failure mode: it has to be visible without
+		// having to notice that the report message is missing.
+		logrus.WithContext(ctx).WithField("task_id", tw.taskCtx.TaskID).
+			Warn("task report is empty, storing an explanatory stub instead")
+		jobResult.Result = fmt.Sprintf("The task run stopped before a report could be produced: %s", stopReason)
+	}
+
+	// The deliverable is written before the terminal state, so the file the task points
+	// at holds the same text the row does. A write failure is folded into the result and
+	// forces Success = false: the evidence is incomplete without the artifact, and a quiet
+	// "success" over a missing report is precisely the failure this exists to remove. It
+	// must not stop the terminal write either — that is what closes the run.
+	outputPath := taskOutputPath(tw.taskCtx.TaskID, tw.taskCtx.OutputPath)
+	hostPath := ""
+	writeFailure := ""
+	if tw.taskCtx.ResultSink != nil {
+		hostPath, err = tw.taskCtx.ResultSink.WriteResult(ctx, outputPath, jobResult.Result)
+		if err != nil {
+			writeFailure = "file_write"
+			logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+				"task_id":     tw.taskCtx.TaskID,
+				"output_path": outputPath,
+				"failure":     "file_write",
+				"stop_reason": stopReason,
+			}).Error("failed to write the task result file")
+			jobResult.Result += fmt.Sprintf("\n\nfailure: file_write: %s (output path: %s)", err, outputPath)
+			jobResult.Success = tools.Bool(false)
+		}
+	}
+
 	if err := tw.SetResult(ctx, jobResult.Result); err != nil {
-		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
-			Error("failed to store the task result")
+		// The result row is the record of truth for the deliverable: terminal and empty
+		// is the exact failure this run was built to remove. Retry once on a fresh
+		// bounded context, because budget spent earlier in the finalize must not cost
+		// the result as well.
+		logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+			"task_id":     tw.taskCtx.TaskID,
+			"failure":     "result_write",
+			"stop_reason": stopReason,
+		}).Error("failed to store the task result")
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), resultWriteRetryTimeout)
+		if retryErr := tw.SetResult(retryCtx, jobResult.Result); retryErr != nil {
+			logrus.WithContext(retryCtx).WithError(retryErr).WithFields(logrus.Fields{
+				"task_id":     tw.taskCtx.TaskID,
+				"failure":     "result_write",
+				"stop_reason": stopReason,
+			}).Error("failed to store the task result on retry")
+		}
+		retryCancel()
 	}
 
 	var taskStatus database.TaskStatus
@@ -531,8 +642,11 @@ func (tw *taskWorker) finalizeRun(stopReason string) error {
 
 	if err := tw.SetStatus(ctx, taskStatus); err != nil {
 		// Last resort: the row must not stay Running with nothing left to run.
-		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
-			Error("failed to set the terminal task status")
+		logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+			"task_id":      tw.taskCtx.TaskID,
+			"failure":      "status_write",
+			"final_status": taskStatus,
+		}).Error("failed to set the terminal task status")
 		_ = tw.SetStatus(context.Background(), taskStatus)
 	}
 
@@ -547,9 +661,26 @@ func (tw *taskWorker) finalizeRun(stopReason string) error {
 		format,
 	)
 	if err != nil {
-		logrus.WithContext(ctx).WithError(err).WithField("task_id", tw.taskCtx.TaskID).
-			Error("failed to put the task report message")
+		logrus.WithContext(ctx).WithError(err).WithFields(logrus.Fields{
+			"task_id": tw.taskCtx.TaskID,
+			"failure": "report_msg",
+		}).Error("failed to put the task report message")
 	}
+
+	// One line that answers why the run ended and where it landed. Everything the
+	// audit asks to be able to reconstruct is on this entry.
+	logrus.WithContext(ctx).WithFields(logrus.Fields{
+		"task_id":      tw.taskCtx.TaskID,
+		"budget":       "task_run",
+		"budget_limit": maxTaskRunDuration.String(),
+		"elapsed":      tw.elapsed(),
+		"stop_reason":  stopReason,
+		"final_status": taskStatus,
+		"empty_result": emptyResult,
+		"output_path":  outputPath,
+		"host_path":    hostPath,
+		"failure":      writeFailure,
+	}).Info("task run finalized")
 
 	return nil
 }

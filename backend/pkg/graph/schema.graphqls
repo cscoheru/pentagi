@@ -278,6 +278,7 @@ type Task {
   input: String!
   result: String!
   flowId: ID!
+  outputPath: String
   subtasks: [Subtask!]
   createdAt: Time!
   updatedAt: Time!
@@ -1063,8 +1064,8 @@ type Query {
 
 type Mutation {
   # Flow management
-  createFlow(modelProvider: String!, input: String!, resourceIds: [ID!]): Flow!
-  putUserInput(flowId: ID!, input: String!, modelProvider: String, resourceIds: [ID!]): ResultType!
+  createFlow(modelProvider: String!, input: String!, resourceIds: [ID!], outputPath: String): Flow!
+  putUserInput(flowId: ID!, input: String!, modelProvider: String, resourceIds: [ID!], outputPath: String): ResultType!
   stopFlow(flowId: ID!): ResultType!
   finishFlow(flowId: ID!): ResultType!
   deleteFlow(flowId: ID!): ResultType!

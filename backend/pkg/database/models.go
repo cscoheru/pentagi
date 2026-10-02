@@ -473,18 +473,18 @@ func (ns NullProviderType) Value() (driver.Value, error) {
 type SearchengineType string
 
 const (
-	SearchengineTypeGoogle     SearchengineType = "google"
-	SearchengineTypeTavily     SearchengineType = "tavily"
-	SearchengineTypeFirecrawl  SearchengineType = "firecrawl"
-	SearchengineTypeTraversaal SearchengineType = "traversaal"
-	SearchengineTypeBrowser    SearchengineType = "browser"
-	SearchengineTypeDuckduckgo SearchengineType = "duckduckgo"
-	SearchengineTypePerplexity SearchengineType = "perplexity"
-	SearchengineTypeSearxng    SearchengineType = "searxng"
-	SearchengineTypeSploitus   SearchengineType = "sploitus"
-	SearchengineTypeCrtsh             SearchengineType = "crtsh"
-	SearchengineTypeFofa              SearchengineType = "fofa"
-	SearchengineTypeShodanInternetDB  SearchengineType = "shodan_internetdb"
+	SearchengineTypeGoogle           SearchengineType = "google"
+	SearchengineTypeTavily           SearchengineType = "tavily"
+	SearchengineTypeFirecrawl        SearchengineType = "firecrawl"
+	SearchengineTypeTraversaal       SearchengineType = "traversaal"
+	SearchengineTypeBrowser          SearchengineType = "browser"
+	SearchengineTypeDuckduckgo       SearchengineType = "duckduckgo"
+	SearchengineTypePerplexity       SearchengineType = "perplexity"
+	SearchengineTypeSearxng          SearchengineType = "searxng"
+	SearchengineTypeSploitus         SearchengineType = "sploitus"
+	SearchengineTypeCrtsh            SearchengineType = "crtsh"
+	SearchengineTypeFofa             SearchengineType = "fofa"
+	SearchengineTypeShodanInternetdb SearchengineType = "shodan_internetdb"
 )
 
 func (e *SearchengineType) Scan(src interface{}) error {
@@ -1077,14 +1077,15 @@ type Subtask struct {
 }
 
 type Task struct {
-	ID        int64        `json:"id"`
-	Status    TaskStatus   `json:"status"`
-	Title     string       `json:"title"`
-	Input     string       `json:"input"`
-	Result    string       `json:"result"`
-	FlowID    int64        `json:"flow_id"`
-	CreatedAt sql.NullTime `json:"created_at"`
-	UpdatedAt sql.NullTime `json:"updated_at"`
+	ID         int64          `json:"id"`
+	Status     TaskStatus     `json:"status"`
+	Title      string         `json:"title"`
+	Input      string         `json:"input"`
+	Result     string         `json:"result"`
+	FlowID     int64          `json:"flow_id"`
+	CreatedAt  sql.NullTime   `json:"created_at"`
+	UpdatedAt  sql.NullTime   `json:"updated_at"`
+	OutputPath sql.NullString `json:"output_path"`
 }
 
 type Termlog struct {

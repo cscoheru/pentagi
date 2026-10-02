@@ -33,18 +33,18 @@ import (
 // "browser" attribution value, so the internal analytics engine needs no new enum
 // value and no DB migration.
 const (
-	EngineGoogle     = database.SearchengineTypeGoogle
-	EngineDuckDuckGo = database.SearchengineTypeDuckduckgo
-	EngineTavily     = database.SearchengineTypeTavily
-	EngineFirecrawl  = database.SearchengineTypeFirecrawl
-	EngineTraversaal = database.SearchengineTypeTraversaal
-	EnginePerplexity = database.SearchengineTypePerplexity
-	EngineSearxng    = database.SearchengineTypeSearxng
-	EngineSploitus   = database.SearchengineTypeSploitus
-	EngineCrtsh      = database.SearchengineTypeCrtsh
-	EngineFofa       = database.SearchengineTypeFofa
-	EngineShodanInternetDB = database.SearchengineTypeShodanInternetDB
-	EngineInternal   = database.SearchengineTypeBrowser
+	EngineGoogle           = database.SearchengineTypeGoogle
+	EngineDuckDuckGo       = database.SearchengineTypeDuckduckgo
+	EngineTavily           = database.SearchengineTypeTavily
+	EngineFirecrawl        = database.SearchengineTypeFirecrawl
+	EngineTraversaal       = database.SearchengineTypeTraversaal
+	EnginePerplexity       = database.SearchengineTypePerplexity
+	EngineSearxng          = database.SearchengineTypeSearxng
+	EngineSploitus         = database.SearchengineTypeSploitus
+	EngineCrtsh            = database.SearchengineTypeCrtsh
+	EngineFofa             = database.SearchengineTypeFofa
+	EngineShodanInternetDB = database.SearchengineTypeShodanInternetdb
+	EngineInternal         = database.SearchengineTypeBrowser
 )
 
 // SearchMode is the INTENT the agent expresses — the shape of answer it needs. The
@@ -190,17 +190,17 @@ func buildSearchEngines(
 	sum := searchers.SummarizeHandler(summarizer)
 
 	engines := map[database.SearchengineType]searchers.Searcher{
-		EngineGoogle:     searchers.NewGoogle(cfg),
-		EngineDuckDuckGo: searchers.NewDuckDuckGo(cfg),
-		EngineTavily:     searchers.NewTavily(cfg, sum),
-		EngineFirecrawl:  searchers.NewFirecrawl(cfg, sum),
-		EngineTraversaal: searchers.NewTraversaal(cfg),
-		EnginePerplexity: searchers.NewPerplexity(cfg, sum),
-		EngineSearxng:    searchers.NewSearxng(cfg, sum),
-		EngineSploitus:   searchers.NewSploitus(cfg),
-		EngineCrtsh:             searchers.NewCrtsh(cfg),
-		EngineFofa:              searchers.NewFofa(cfg),
-		EngineShodanInternetDB:  searchers.NewShodanInternetDB(cfg),
+		EngineGoogle:           searchers.NewGoogle(cfg),
+		EngineDuckDuckGo:       searchers.NewDuckDuckGo(cfg),
+		EngineTavily:           searchers.NewTavily(cfg, sum),
+		EngineFirecrawl:        searchers.NewFirecrawl(cfg, sum),
+		EngineTraversaal:       searchers.NewTraversaal(cfg),
+		EnginePerplexity:       searchers.NewPerplexity(cfg, sum),
+		EngineSearxng:          searchers.NewSearxng(cfg, sum),
+		EngineSploitus:         searchers.NewSploitus(cfg),
+		EngineCrtsh:            searchers.NewCrtsh(cfg),
+		EngineFofa:             searchers.NewFofa(cfg),
+		EngineShodanInternetDB: searchers.NewShodanInternetDB(cfg),
 	}
 
 	// The internal analytics engine discovers URLs with the link engines (in priority

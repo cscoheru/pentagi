@@ -29,6 +29,7 @@ type FlowController interface {
 		ctx context.Context,
 		userID int64,
 		input string,
+		outputPath string,
 		prvname provider.ProviderName,
 		prvtype provider.ProviderType,
 		functions *tools.Functions,
@@ -152,6 +153,7 @@ func (fc *flowController) CreateFlow(
 	ctx context.Context,
 	userID int64,
 	input string,
+	outputPath string,
 	prvname provider.ProviderName,
 	prvtype provider.ProviderType,
 	functions *tools.Functions,
@@ -161,12 +163,13 @@ func (fc *flowController) CreateFlow(
 	defer fc.mx.Unlock()
 
 	fw, err := NewFlowWorker(ctx, newFlowWorkerCtx{
-		userID:    userID,
-		input:     input,
-		prvname:   prvname,
-		prvtype:   prvtype,
-		functions: functions,
-		resources: resources,
+		userID:     userID,
+		input:      input,
+		outputPath: outputPath,
+		prvname:    prvname,
+		prvtype:    prvtype,
+		functions:  functions,
+		resources:  resources,
 		flowWorkerCtx: flowWorkerCtx{
 			db:     fc.db,
 			cfg:    fc.cfg,

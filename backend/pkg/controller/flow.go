@@ -44,7 +44,7 @@ type FlowWorker interface {
 	DeleteAssistant(ctx context.Context, assistantID int64) error
 	ListAssistants(ctx context.Context) []AssistantWorker
 	ListTasks(ctx context.Context) []TaskWorker
-	PutInput(ctx context.Context, input string, prv provider.Provider, resources []database.UserResource) error
+	PutInput(ctx context.Context, input string, outputPath string, prv provider.Provider, resources []database.UserResource) error
 	PutResources(ctx context.Context, resources []database.UserResource) error
 	Finish(ctx context.Context) error
 	Stop(ctx context.Context) error
@@ -73,13 +73,14 @@ type flowWorker struct {
 }
 
 type newFlowWorkerCtx struct {
-	userID    int64
-	input     string
-	dryRun    bool
-	prvname   provider.ProviderName
-	prvtype   provider.ProviderType
-	functions *tools.Functions
-	resources []database.UserResource
+	userID     int64
+	input      string
+	outputPath string
+	dryRun     bool
+	prvname    provider.ProviderName
+	prvtype    provider.ProviderType
+	functions  *tools.Functions
+	resources  []database.UserResource
 
 	flowWorkerCtx
 }
@@ -119,7 +120,11 @@ const flowInputTimeout = 1 * time.Second
 
 type flowInput struct {
 	input string
-	done  chan error
+	// outputPath is the task's contract path: where the framework must persist the
+	// task result. Empty means "not declared" and the task falls back to the
+	// canonical per-task path.
+	outputPath string
+	done       chan error
 }
 
 func NewFlowWorker(
@@ -265,6 +270,7 @@ func NewFlowWorker(
 		MsgLog:     workers.mlw,
 		TermLog:    workers.tlw,
 		Screenshot: workers.sw,
+		ResultSink: NewFlowResultSink(fwc.cfg, fwc.docker, flow.ID),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx, _ = obs.Observer.NewObservation(ctx, langfuse.WithObservationTraceID(observation.TraceID()))
@@ -308,7 +314,7 @@ func NewFlowWorker(
 	go fw.worker()
 
 	if !fwc.dryRun {
-		if err := fw.PutInput(ctx, fwc.input, nil, fwc.resources); err != nil {
+		if err := fw.PutInput(ctx, fwc.input, fwc.outputPath, nil, fwc.resources); err != nil {
 			return nil, wrapErrorEndSpan(ctx, flowSpan, "failed to run flow worker", err)
 		}
 	}
@@ -425,6 +431,7 @@ func LoadFlowWorker(ctx context.Context, flow database.Flow, fwc flowWorkerCtx) 
 		MsgLog:     workers.mlw,
 		TermLog:    workers.tlw,
 		Screenshot: workers.sw,
+		ResultSink: NewFlowResultSink(fwc.cfg, fwc.docker, flow.ID),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx, _ = obs.Observer.NewObservation(ctx, langfuse.WithObservationTraceID(observation.TraceID()))
@@ -643,6 +650,7 @@ func (fw *flowWorker) ListTasks(ctx context.Context) []TaskWorker {
 func (fw *flowWorker) PutInput(
 	ctx context.Context,
 	input string,
+	outputPath string,
 	prv provider.Provider,
 	resources []database.UserResource,
 ) error {
@@ -657,7 +665,7 @@ func (fw *flowWorker) PutInput(
 		fw.logger.WithError(err).Warn("failed to copy resources before user input")
 	}
 
-	flin := flowInput{input: input, done: make(chan error, 1)}
+	flin := flowInput{input: input, outputPath: outputPath, done: make(chan error, 1)}
 	select {
 	case <-fw.ctx.Done():
 		close(flin.done)
@@ -1074,7 +1082,7 @@ func (fw *flowWorker) processInput(flin flowInput) (TaskWorker, error) {
 	defer fw.taskWG.Done()
 	defer fw.signalTaskComplete()
 
-	task, err := fw.tc.CreateTask(ctx, flin.input, fw)
+	task, err := fw.tc.CreateTask(ctx, flin.input, flin.outputPath, fw)
 	if err != nil {
 		if errors.Is(err, context.Canceled) && fw.ctx.Err() == nil {
 			// CreateTask was cancelled by Stop() — not a fatal flow error.

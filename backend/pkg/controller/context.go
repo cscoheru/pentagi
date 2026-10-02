@@ -31,12 +31,21 @@ type FlowContext struct {
 	TermLog    FlowTermLogWorker
 	MsgLog     FlowMsgLogWorker
 	Screenshot FlowScreenshotWorker
+
+	// ResultSink persists task results to their output path. It is allowed to be nil,
+	// which means the runtime writes no deliverable file; production flow workers always
+	// build one, and tests that only exercise the terminal state can leave it unset.
+	ResultSink TaskResultSink
 }
 
 type TaskContext struct {
 	TaskID    int64
 	TaskTitle string
 	TaskInput string
+	// OutputPath is the path the framework must write the task result to. Empty
+	// means the user declared no contract path and the runtime falls back to the
+	// canonical per-task path, so a deliverable always exists somewhere predictable.
+	OutputPath string
 
 	FlowContext
 }
