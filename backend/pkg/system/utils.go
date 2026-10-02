@@ -16,6 +16,9 @@ import (
 const (
 	// defaultHTTPClientTimeout is the fallback timeout when no config is provided.
 	defaultHTTPClientTimeout = 10 * time.Minute
+	// defaultLLMClientTimeout mirrors config.LLMClientTimeout's envDefault, for callers
+	// that run without a config. Kept in step with the 240s default the run budget needs.
+	defaultLLMClientTimeout = 4 * time.Minute
 )
 
 func getHostname() string {
@@ -67,12 +70,32 @@ func GetSystemCertPool(cfg *config.Config) (*x509.CertPool, error) {
 	return pool, nil
 }
 
+// GetHTTPClient returns a client for search engines and other external tools. It keeps the
+// generous HTTPClientTimeout on purpose: a single search query routinely takes minutes, and
+// sharing a timeout with LLM calls would make one of the two workloads wrong.
 func GetHTTPClient(cfg *config.Config) (*http.Client, error) {
-	var httpClient *http.Client
+	if cfg == nil {
+		return getHTTPClient(nil, defaultHTTPClientTimeout)
+	}
+	return getHTTPClient(cfg, max(time.Duration(cfg.HTTPClientTimeout)*time.Second, 0))
+}
 
+// GetLLMClient returns a client for LLM provider API calls. These stream, and http.Client.Timeout
+// covers the whole response body read, so this bounds an entire generation. It is deliberately
+// separate from GetHTTPClient so a slow search cannot buy an unbounded LLM call and vice versa.
+func GetLLMClient(cfg *config.Config) (*http.Client, error) {
+	if cfg == nil {
+		return getHTTPClient(nil, defaultLLMClientTimeout)
+	}
+	return getHTTPClient(cfg, max(time.Duration(cfg.LLMClientTimeout)*time.Second, 0))
+}
+
+// getHTTPClient builds the transport once for both factories. A cfg of nil yields a client with
+// no TLS or proxy customization, matching what GetHTTPClient has always done without config.
+func getHTTPClient(cfg *config.Config, timeout time.Duration) (*http.Client, error) {
 	if cfg == nil {
 		return &http.Client{
-			Timeout: defaultHTTPClientTimeout,
+			Timeout: timeout,
 		}, nil
 	}
 
@@ -81,14 +104,8 @@ func GetHTTPClient(cfg *config.Config) (*http.Client, error) {
 		return nil, err
 	}
 
-	// Convert timeout from config (in seconds) to time.Duration
-	// 0 = no timeout (unlimited), >0 = timeout in seconds
-	// Default value (600) is automatically set in config.go via envDefault:"600" tag
-	// when HTTP_CLIENT_TIMEOUT environment variable is not set
-	timeout := max(time.Duration(cfg.HTTPClientTimeout)*time.Second, 0)
-
 	if cfg.ProxyURL != "" {
-		httpClient = &http.Client{
+		return &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				Proxy: func(req *http.Request) (*url.URL, error) {
@@ -99,18 +116,16 @@ func GetHTTPClient(cfg *config.Config) (*http.Client, error) {
 					InsecureSkipVerify: cfg.ExternalSSLInsecure,
 				},
 			},
-		}
-	} else {
-		httpClient = &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					RootCAs:            rootCAPool,
-					InsecureSkipVerify: cfg.ExternalSSLInsecure,
-				},
-			},
-		}
+		}, nil
 	}
 
-	return httpClient, nil
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:            rootCAPool,
+				InsecureSkipVerify: cfg.ExternalSSLInsecure,
+			},
+		},
+	}, nil
 }

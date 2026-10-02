@@ -745,6 +745,104 @@ func TestGetHTTPClient_LargeTimeout(t *testing.T) {
 	}
 }
 
+func TestGetLLMClient_NilConfig(t *testing.T) {
+	client, err := GetLLMClient(nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("expected non-nil LLM client")
+	}
+
+	if client.Timeout != defaultLLMClientTimeout {
+		t.Errorf("expected default timeout %v, got %v", defaultLLMClientTimeout, client.Timeout)
+	}
+}
+
+func TestGetLLMClient_DefaultTimeout(t *testing.T) {
+	cfg := &config.Config{
+		HTTPClientTimeout: 600,
+		LLMClientTimeout:  240,
+	}
+
+	client, err := GetLLMClient(cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expected := 240 * time.Second
+	if client.Timeout != expected {
+		t.Errorf("expected timeout %v, got %v", expected, client.Timeout)
+	}
+}
+
+func TestGetLLMClient_CustomTimeout(t *testing.T) {
+	cfg := &config.Config{
+		LLMClientTimeout: 90,
+	}
+
+	client, err := GetLLMClient(cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	expected := 90 * time.Second
+	if client.Timeout != expected {
+		t.Errorf("expected timeout %v, got %v", expected, client.Timeout)
+	}
+}
+
+func TestGetLLMClient_ZeroTimeoutMeansNoTimeout(t *testing.T) {
+	cfg := &config.Config{
+		LLMClientTimeout: 0,
+	}
+
+	client, err := GetLLMClient(cfg)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if client.Timeout != 0 {
+		t.Errorf("expected no timeout (0) when explicitly set to 0, got %v", client.Timeout)
+	}
+}
+
+// TestGetLLMClient_SharesTransportShapeWithHTTPClient guards the D1 invariant directly: the two
+// factories must return clients with different timeouts from the same config. If a refactor ever
+// collapses them back into one shared client, this is the test that fails.
+func TestGetLLMClient_SharesTransportShapeWithHTTPClient(t *testing.T) {
+	cfg := &config.Config{
+		HTTPClientTimeout: 600,
+		LLMClientTimeout:  240,
+	}
+
+	search, err := GetHTTPClient(cfg)
+	if err != nil {
+		t.Fatalf("expected no error building the search client, got: %v", err)
+	}
+	llm, err := GetLLMClient(cfg)
+	if err != nil {
+		t.Fatalf("expected no error building the LLM client, got: %v", err)
+	}
+
+	if search.Timeout == llm.Timeout {
+		t.Errorf("expected distinct timeouts for search (%v) and LLM (%v) calls from one config",
+			search.Timeout, llm.Timeout)
+	}
+	if search.Timeout != 600*time.Second {
+		t.Errorf("expected the search client to keep %v, got %v", 600*time.Second, search.Timeout)
+	}
+	if llm.Timeout != 240*time.Second {
+		t.Errorf("expected the LLM client to use %v, got %v", 240*time.Second, llm.Timeout)
+	}
+
+	// Both must still get the shared transport settings; splitting the timeout must not drop TLS.
+	if search.Transport == nil || llm.Transport == nil {
+		t.Error("expected both clients to carry a TLS transport after the split")
+	}
+}
+
 func TestHTTPClient_RealConnection_InsecureMode(t *testing.T) {
 	certs, err := generateTestCerts()
 	if err != nil {

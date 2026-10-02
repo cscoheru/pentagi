@@ -3579,7 +3579,8 @@ EMBEDDING_MAX_TEXT_BYTES=8192   # Max bytes of text sent to embedding model per 
 
 # Advanced settings
 PROXY_URL=                      # Optional proxy for all API calls
-HTTP_CLIENT_TIMEOUT=600         # Timeout in seconds for external API calls (default: 600, 0 = no timeout)
+HTTP_CLIENT_TIMEOUT=600         # Timeout in seconds for search engines and external tools (default: 600, 0 = no timeout)
+LLM_CLIENT_TIMEOUT=240          # Timeout in seconds for LLM provider calls; bounds a whole streaming generation (default: 240, 0 = no timeout)
 TERMINAL_TOOL_TIMEOUT=1200      # Default timeout in seconds for terminal tool commands when timeout=0 or negative (range: 1–10800; values <= 0 or above 10800 are clamped to 10800 = 3 hours)
 
 # SSL/TLS Certificate Configuration (for external communication with LLM backends and tool servers)
@@ -3758,7 +3759,7 @@ A failing `test` confirms the problem is in the embedding configuration rather t
 - `EMBEDDING_PROVIDER` is one of the supported providers (default `openai`).
 - `EMBEDDING_MODEL` is a valid model name for that provider.
 - `EMBEDDING_URL` and `EMBEDDING_KEY` are correct for the provider. If both are left empty, PentAGI falls back to the matching LLM provider settings (for example `OPEN_AI_KEY` and `OPEN_AI_SERVER_URL` when `EMBEDDING_PROVIDER=openai`), so a missing or wrong key there can break embeddings too.
-- The endpoint is reachable from inside the container. If outbound calls go through a proxy, confirm `PROXY_URL` is set; if calls hang rather than fail quickly, `HTTP_CLIENT_TIMEOUT` controls how long PentAGI waits on the provider before giving up.
+- The endpoint is reachable from inside the container. If outbound calls go through a proxy, confirm `PROXY_URL` is set; if calls hang rather than fail quickly, `LLM_CLIENT_TIMEOUT` controls how long PentAGI waits on the provider before giving up (embedding calls use the LLM timeout, not `HTTP_CLIENT_TIMEOUT`, which only bounds search engines and external tools).
 
 > **Changing provider?** If you switch embedding providers after data has already been indexed, run `flush` or `reindex` with etester so old and new vectors are not mixed. See [Why Consistent Embedding Providers Matter](#why-consistent-embedding-providers-matter) above.
 

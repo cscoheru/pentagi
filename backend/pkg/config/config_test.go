@@ -312,6 +312,7 @@ func clearConfigEnv(t *testing.T) {
 		"ASSISTANT_SUMMARIZER_MAX_QA_SECTIONS", "ASSISTANT_SUMMARIZER_MAX_QA_BYTES",
 		"ASSISTANT_SUMMARIZER_KEEP_QA_SECTIONS",
 		"PROXY_URL", "EXTERNAL_SSL_CA_PATH", "EXTERNAL_SSL_INSECURE", "HTTP_CLIENT_TIMEOUT",
+		"LLM_CLIENT_TIMEOUT",
 		"OTEL_HOST", "LANGFUSE_BASE_URL", "LANGFUSE_PROJECT_ID", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
 		"GRAPHITI_ENABLED", "GRAPHITI_TIMEOUT", "GRAPHITI_URL",
 		"EXECUTION_MONITOR_ENABLED", "EXECUTION_MONITOR_SAME_TOOL_LIMIT", "EXECUTION_MONITOR_TOTAL_TOOL_LIMIT",
@@ -554,6 +555,44 @@ func TestNewConfig_HTTPClientTimeout(t *testing.T) {
 		config, err := NewConfig()
 		require.NoError(t, err)
 		assert.Equal(t, 0, config.HTTPClientTimeout)
+	})
+}
+
+// TestNewConfig_LLMClientTimeout locks the D1 split: LLM calls get their own budget so a slow
+// search cannot buy an unbounded LLM call. The default must stay below the subtask run budget.
+func TestNewConfig_LLMClientTimeout(t *testing.T) {
+	clearConfigEnv(t)
+	t.Chdir(t.TempDir())
+
+	t.Run("default timeout", func(t *testing.T) {
+		config, err := NewConfig()
+		require.NoError(t, err)
+		assert.Equal(t, 240, config.LLMClientTimeout)
+	})
+
+	t.Run("custom timeout", func(t *testing.T) {
+		t.Setenv("LLM_CLIENT_TIMEOUT", "90")
+		config, err := NewConfig()
+		require.NoError(t, err)
+		assert.Equal(t, 90, config.LLMClientTimeout)
+	})
+
+	t.Run("zero timeout", func(t *testing.T) {
+		t.Setenv("LLM_CLIENT_TIMEOUT", "0")
+		config, err := NewConfig()
+		require.NoError(t, err)
+		assert.Equal(t, 0, config.LLMClientTimeout)
+	})
+
+	// The two budgets are independent: setting one must never move the other. A regression that
+	// collapses them back into a single shared timeout is exactly the bug D1 exists to prevent.
+	t.Run("independent of the search timeout", func(t *testing.T) {
+		t.Setenv("HTTP_CLIENT_TIMEOUT", "600")
+		t.Setenv("LLM_CLIENT_TIMEOUT", "240")
+		config, err := NewConfig()
+		require.NoError(t, err)
+		assert.Equal(t, 600, config.HTTPClientTimeout)
+		assert.Equal(t, 240, config.LLMClientTimeout)
 	})
 }
 

@@ -65,7 +65,7 @@ func New(
 	baseKey := cfg.LLMServerKey
 	baseURL := cfg.LLMServerURL
 	baseModel := cfg.LLMServerModel
-	httpClient, err := system.GetHTTPClient(cfg)
+	httpClient, err := system.GetLLMClient(cfg)
 	if err != nil {
 		return nil, err
 	}

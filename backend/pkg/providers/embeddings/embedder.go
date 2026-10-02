@@ -36,7 +36,7 @@ func (e *embedder) IsAvailable() bool {
 }
 
 func New(cfg *config.Config) (Embedder, error) {
-	httpClient, err := system.GetHTTPClient(cfg)
+	httpClient, err := system.GetLLMClient(cfg)
 	if err != nil {
 		return nil, err
 	}

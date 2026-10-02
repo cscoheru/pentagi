@@ -1749,7 +1749,8 @@ These settings control HTTP proxy, SSL configuration, and network timeouts for o
 | ProxyURL            | `PROXY_URL`             | *(none)*      | URL for HTTP proxy (e.g., `http://user:pass@proxy:8080`)         |
 | ExternalSSLCAPath   | `EXTERNAL_SSL_CA_PATH`  | *(none)*      | Path to trusted CA certificate for external LLM SSL connections  |
 | ExternalSSLInsecure | `EXTERNAL_SSL_INSECURE` | `false`       | Skip SSL certificate verification for external connections       |
-| HTTPClientTimeout   | `HTTP_CLIENT_TIMEOUT`   | `600`         | Timeout in seconds for external API calls (0 = no timeout)       |
+| HTTPClientTimeout   | `HTTP_CLIENT_TIMEOUT`   | `600`         | Timeout in seconds for search engines and external tools (0 = no timeout) |
+| LLMClientTimeout    | `LLM_CLIENT_TIMEOUT`    | `240`         | Timeout in seconds for LLM provider calls (0 = no timeout)       |
 
 ### Usage Details
 
@@ -1807,25 +1808,32 @@ The SSL settings provide additional security configuration:
   ```
   **Warning**: Only use this in development or trusted environments. Skipping certificate verification exposes connections to man-in-the-middle attacks.
 
-- **HTTPClientTimeout**: Sets the timeout for all external HTTP requests (LLM providers, search engines, etc.):
+- **HTTPClientTimeout**: Sets the timeout for external HTTP requests to search engines and other external tools:
   ```go
-  // Used in pkg/system/utils.go for HTTP client configuration
-  timeout := defaultHTTPClientTimeout
-  if cfg.HTTPClientTimeout > 0 {
-      timeout = time.Duration(cfg.HTTPClientTimeout) * time.Second
-  }
-  
-  httpClient := &http.Client{
-      Timeout: timeout,
-  }
+  // Used in pkg/system/utils.go for the search/tool HTTP client
+  timeout := max(time.Duration(cfg.HTTPClientTimeout)*time.Second, 0)
   ```
-  The default value of 600 seconds (10 minutes) is suitable for most LLM API calls, including long-running operations. Setting this to 0 disables the timeout (not recommended in production), while very low values may cause legitimate requests to fail. This setting affects:
-  - All LLM provider API calls (OpenAI, Anthropic, Bedrock, etc.)
-  - Search engine requests (Google, Tavily, Perplexity, etc.)
+  The default value of 600 seconds (10 minutes) is suitable for search providers, which routinely need minutes for a single query. Setting this to 0 disables the timeout (not recommended in production). This setting affects:
+  - Search engine requests (Google, Tavily, Perplexity, Searxng, etc.)
   - External tool integrations
+
+- **LLMClientTimeout**: Sets the timeout for LLM provider API calls, separately from the search timeout above:
+  ```go
+  // Used in pkg/system/utils.go for the LLM HTTP client
+  timeout := max(time.Duration(cfg.LLMClientTimeout)*time.Second, 0)
+  ```
+  LLM calls stream, and `http.Client.Timeout` covers the whole response body read, so this bounds an entire generation rather than a single request. The default of 240 seconds (4 minutes) is deliberately below the subtask run budget so one provider call cannot consume a whole subtask. Raise it if a provider legitimately needs longer generations. This setting affects:
+  - LLM provider API calls made through the shared LLM client (OpenAI, Anthropic, DeepSeek, GLM, Kimi, MiniMax, Ollama, Qwen, custom providers)
   - Embedding generation requests
 
-  Adjust this value based on your network conditions and the complexity of operations being performed.
+  **Known gap — Gemini and AWS Bedrock are not covered.** Those two adapters build their own
+  `http.Client` inside `pkg/providers/gemini/gemini.go` and `pkg/providers/bedrock/bedrock.go`
+  instead of going through `system.GetLLMClient`, so `LLM_CLIENT_TIMEOUT` does not apply to
+  them and their per-call bound is only the enclosing subtask run budget. This predates the
+  split and is unchanged by it; do not raise this value expecting it to govern Gemini or
+  Bedrock generations.
+
+  The two timeouts are independent on purpose: a slow search must not buy an unbounded LLM call, and a long generation must not be cut short by the search budget. Adjust each based on your network conditions and the complexity of the operations being performed.
 
 ## Graphiti Knowledge Graph Settings
 

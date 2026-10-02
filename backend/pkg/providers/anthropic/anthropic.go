@@ -69,7 +69,7 @@ func New(
 	providerConfig *pconfig.ProviderConfig,
 ) (provider.Provider, error) {
 	baseURL := cfg.AnthropicServerURL
-	httpClient, err := system.GetHTTPClient(cfg)
+	httpClient, err := system.GetLLMClient(cfg)
 	if err != nil {
 		return nil, err
 	}

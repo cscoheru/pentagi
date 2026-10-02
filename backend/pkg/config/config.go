@@ -252,9 +252,19 @@ type Config struct {
 	ExternalSSLCAPath   string `env:"EXTERNAL_SSL_CA_PATH" envDefault:""`
 	ExternalSSLInsecure bool   `env:"EXTERNAL_SSL_INSECURE" envDefault:"false"`
 
-	// HTTP client timeout in seconds for external API calls (LLM providers, search tools, etc.)
+	// HTTP client timeout in seconds for external API calls to search engines and other
+	// external tools. Search providers routinely need minutes for a single query, so this
+	// stays deliberately generous and is NOT shared with LLM providers (see LLMClientTimeout).
 	// A value of 0 means no timeout (not recommended).
 	HTTPClientTimeout int `env:"HTTP_CLIENT_TIMEOUT" envDefault:"600"`
+
+	// HTTP client timeout in seconds for LLM provider API calls (chat, tool calls, embeddings).
+	// LLM calls stream, and http.Client.Timeout covers the whole response body read, so this
+	// bounds an entire generation rather than a single request. It must stay below the task
+	// subtask run budget so one provider call cannot consume the whole subtask; raise it via
+	// the environment if a provider legitimately needs longer generations.
+	// A value of 0 means no timeout (not recommended).
+	LLMClientTimeout int `env:"LLM_CLIENT_TIMEOUT" envDefault:"240"`
 
 	// === Observability: OpenTelemetry Collector ===
 	TelemetryEndpoint string `env:"OTEL_HOST"`

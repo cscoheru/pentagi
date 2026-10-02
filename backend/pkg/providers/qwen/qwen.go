@@ -57,7 +57,7 @@ func New(
 	providerName provider.ProviderName,
 	providerConfig *pconfig.ProviderConfig,
 ) (provider.Provider, error) {
-	httpClient, err := system.GetHTTPClient(cfg)
+	httpClient, err := system.GetLLMClient(cfg)
 	if err != nil {
 		return nil, err
 	}
