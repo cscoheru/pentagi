@@ -40,6 +40,10 @@ const (
 	// the subtask result, so the chain finalizes on its own after a few such replies.
 	maxConsecutiveTextOnlyResponses = 3
 	delayBetweenRetries             = 5 * time.Second
+	// logSnippetLimit bounds how much of an error or argument string is copied
+	// into log fields, error messages and the recovery banner; full strings
+	// still reach server-side logs where they are written.
+	logSnippetLimit = 200
 )
 
 type callResult struct {
@@ -78,6 +82,40 @@ func synthesizeDoneCall(content string) llms.ToolCall {
 			Arguments: string(args),
 		},
 	}
+}
+
+// chainFailureTerminal reports whether retrying the whole agent chain is
+// pointless: the run's context is already spent, or the failure is a
+// cancellation/timeout rather than a transient provider hiccup. The returned
+// reason keeps the two cases apart (audit: external cancel must not be
+// recorded as an execution failure, and a provider's own deadline must be
+// distinguishable from the framework's budget) so the caller can log a stop
+// reason an operator can actually act on instead of a generic retry error.
+//
+// ctx.Err() is checked first because it is the framework's own budget/cancel
+// state and does not depend on how the provider wrapped its error. The
+// Timeout() fallback is not redundant: http.Client.Timeout surfaces as an
+// *httpError that reports Timeout() bool but does NOT satisfy
+// errors.Is(err, context.DeadlineExceeded), so the LLM_CLIENT_TIMEOUT path
+// would otherwise be retried as if it were transient.
+func chainFailureTerminal(ctx context.Context, err error) (terminal bool, reason string) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(ctxErr, context.Canceled) {
+			return true, "canceled"
+		}
+		return true, "budget_exhausted"
+	}
+	if errors.Is(err, context.Canceled) {
+		return true, "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true, "provider_deadline"
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true, "provider_timeout"
+	}
+	return false, ""
 }
 
 func (fp *flowProvider) performAgentChain(
@@ -535,7 +573,7 @@ func (fp *flowProvider) callWithRetries(
 					logger.WithFields(logrus.Fields{
 						"tool_call_id": toolCall.ID,
 						"tool_name":    toolCall.FunctionCall.Name,
-						"raw_args":     toolCall.FunctionCall.Arguments[:min(200, len(toolCall.FunctionCall.Arguments))],
+						"raw_args":     toolCall.FunctionCall.Arguments[:min(logSnippetLimit, len(toolCall.FunctionCall.Arguments))],
 					}).Warn("tool call has invalid JSON arguments, replacing with empty object to allow tool-call fixer to regenerate them")
 					sanitizedArgs = "{}"
 				}
@@ -608,9 +646,35 @@ func (fp *flowProvider) callWithRetries(
 			break
 		} else {
 			errs = append(errs, err)
+
+			// Budget exhaustion, cancellation and timeouts cannot be fixed by
+			// running the whole chain again: the context is already spent (so a
+			// second attempt would fail instantly) or the provider just spent the
+			// call budget, and burning maxRetriesToCallAgentChain more full chain
+			// runs on top of that only delays the inevitable failure and hides why
+			// it happened. Give up now with a reason an operator can read.
+			if terminal, reason := chainFailureTerminal(ctx, err); terminal {
+				logger.WithFields(logrus.Fields{
+					"retry_iteration": idx,
+					"stop_reason":     reason,
+					"error":           err.Error()[:min(logSnippetLimit, len(err.Error()))],
+				}).Warn("agent chain call failed, not retrying: budget/cancel/timeout is not transient")
+
+				// Join ctx.Err() as well: when the run's context died, the
+				// underlying call error is often a generic I/O failure that says
+				// nothing about the cancellation, so upstream errors.Is checks
+				// for context.Canceled/DeadlineExceeded would miss the real cause
+				// and misreport an external cancel as an ordinary failure.
+				cause := errors.Join(errs...)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					cause = errors.Join(cause, ctxErr)
+				}
+				return nil, fmt.Errorf("agent chain aborted (%s): %w", reason, cause)
+			}
+
 			logger.WithFields(logrus.Fields{
 				"retry_iteration": idx,
-				"error":           err.Error()[:min(200, len(err.Error()))],
+				"error":           err.Error()[:min(logSnippetLimit, len(err.Error()))],
 			}).Warn("agent chain call failed, will retry")
 		}
 
@@ -618,7 +682,13 @@ func (fp *flowProvider) callWithRetries(
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			return nil, fmt.Errorf("context canceled while waiting for retry: %w", ctx.Err())
+			// This fires only if cancel/deadline arrived while waiting out the
+			// backoff, not because the call itself failed — a different cause than
+			// the retry above, so it must not read like one. Reuse the canonical
+			// classifier so both abort paths emit the same stop_reason tokens
+			// (canceled / budget_exhausted) that operators grep for.
+			_, reason := chainFailureTerminal(ctx, ctx.Err())
+			return nil, fmt.Errorf("agent chain retry wait aborted (%s): %w", reason, ctx.Err())
 		}
 	}
 

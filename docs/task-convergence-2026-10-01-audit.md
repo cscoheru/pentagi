@@ -228,3 +228,88 @@ frontend vitest flow-report.test.tsx                 3 passed
 `pkg/observability/langfuse/api/**` 存在既有的 `gofmt` 未格式化文件，**不在本次变更集内**，
 按 §3.1「不得修改无关模块」不碰。
 
+### A.5 A+B 追加实现回执（2026-10-03）— 两处口径纠正与 B 的返回契约
+
+> 同 A.2：如实登记与既有说法不一致之处，**不修改上面任何审验结论、裁定或措辞**。
+> 本轮范围严格限于 **A（预算类错误不重试整条链）** 与 **B（search 链崩溃时回填，不作废）**，
+> 源于 flow #19/#20 实跑（2026-10-02）观察到的同一条故障链：`search` 嵌套 searcher 链
+> 在 ~287.5 s 撞子任务 300 s 预算死亡，随后把这一轮已采集的全部材料作废。
+
+#### A.5.1 纠正一：A 的收益口径（此前口头表述「省下 288 s × N」不成立）
+
+重算日志后确认：**288 s 是单次尝试吃光整个子任务预算**（02:16:42–02:21:04 的嵌套工具调用
+全部落在 `search` 02:16:29 + 287.5 s 之内），并非「重试了 3 次、每次 288 s」。预算死亡后第二次
+尝试会因 ctx 已死立刻失败，不会再次烧掉 288 s。**因此本轮不得再引用「288 s × N」。**
+
+A 实际买到的是：
+
+1. **stop reason 可读且符合 §3.4**：`"context canceled while waiting for retry"` →
+   精确区分 `budget_exhausted` / `canceled` / `provider_deadline` / `provider_timeout`。
+   实测日志字段：`stop_reason=canceled retry_iteration=0 task_id subtask_id`。
+2. **不再对 timeout 类错误做整链重试**：`http.Client.Timeout`（`LLM_CLIENT_TIMEOUT`）触发时
+   **ctx 仍然活着**，原代码会走满 `maxRetriesToCallAgentChain=3`，每次再烧最多 240 s + 5 s 间隔
+   ——这才是「重试整链」的真实浪费形态（最坏 ~720 s，虽被 300 s 子任务预算截断，形态仍是错的）。
+3. **预算/取消死亡时不再进 `performCallerReflector`**（那是一次额外 LLM 调用）。
+
+**大头收益来自 B**，不是 A。落地位置 `backend/pkg/providers/performer.go`
+（`chainFailureTerminal` + `callWithRetries` 终止分支）；测试 `performer_test.go` 6 项行为测试 +
+7 子测分类测试（backoff-wait 中断的 canceled/budget_exhausted 两项为合入前 `/review` 追加）。
+
+#### A.5.2 纠正二：B 的恢复来源不是 `searchResult`
+
+此前表述「回填已累积的 `searchResult`」不成立：`tools.SearchResult` 只在 agent 显式调用
+`search_result` 工具的回调里被赋值（`performSearcher` 内的 `SearchResult` 回调，函数级引用以免行号漂移）。**链在预算处死亡时它几乎必然是零值。**
+真实恢复来源是 `fp.db.GetSubtaskSearchLogs`（内层 `web_search` 已写进 DB 的原始记录），
+`searchResult.Result` 仅作为「agent 恰好提交过摘要则优先使用」的可选上层；
+`subtaskID == nil` 时回退 `GetTaskSearchLogs`（覆盖 task 级 searcher），**刻意不回退到 flow 级**
+——其他 task 的日志不是本问题的证据。
+
+#### A.5.3 B 的返回契约：链死亡时返回 `(recovered, nil)`
+
+**决策**：`performSearcher` 链死亡时返回 `(recoveredText, nil)`，incompleteness 写进返回文本本身
+（首部 `[INCOMPLETE SEARCH]` 标注块 + `Warn` 日志带 task/subtask/cause；恢复条数只出现在返回文本的
+`recovered search logs (N)` 行，未进日志字段）。
+
+**依据是代码事实，不是实现方自选放宽**：
+
+- `pkg/tools/executor.go` `wrapHandler` 在 handler 返回非 nil error 时丢弃 `result`（返回 `""`）；
+- `pkg/providers/handlers.go:765` 同样 `if err != nil { return "", ... }`。
+
+两层都会在有 error 时丢弃字符串，故 `(partial, err)` 会**同时**丢掉材料和错误，B 的目标直接落空。
+第二重副作用：`performer.go` 会把任何 handler error 当作工具参数格式问题走 `fixToolCallArgs`
+重试（最多 `maxRetriesToCallFunction=3`）——预算死亡不是参数问题，会白白再烧几次调用。
+
+**未因此放宽的**：flow/task 级 `Success`、终态、停止语义、预算数值、`Tool` 接口、
+`executor.go` 错误契约**全部零改动**（§2 / §3.1）。标注块独立成段，与恢复的原始材料用分隔线隔开，
+不混入模型证据（§3.2）。
+
+#### A.5.4 本轮登记但未修（同源缺口，均 §3.1 最小化）
+
+- **C：subtask result 必达**（`provider.go` `TODO` + `controller/subtask.go` 的 `SetResult` 死代码）。
+- **`performPentester` / `performEnricher`**：与 `performSearcher` 同构，共享同一「链失败即作废」缺陷，本轮不修。
+- **item E**：`wrapHandler` 丢弃 result + `fixToolCallArgs` 误判——改错误契约属架构决策，须先出变更说明。
+- **D / D2 / D4**、Gemini/Bedrock 超时缺口、`LLMClientTimeout` installer TUI、F5/F7/F8c/F9/F11：
+  维持既有登记状态，零改动。
+- **S1：结构化 incomplete 标记**（2026-10-03 `/review` 安全项，用户裁定「登记不改」）：当前
+  未完成状态只以返回文本里的 `[INCOMPLETE SEARCH]` 字符串表达，`search_result` 回调 /
+  `UpdateLogSuccess` 契约层没有独立的状态位。改成结构化标记属工具层状态契约变更（§3.1
+  架构决策），须先出变更说明与测试，本轮零改动。
+- **P2：恢复读取加 `LIMIT`**（2026-10-03 `/review` 性能项，用户裁定「登记不改」）：
+  `GetSubtaskSearchLogs` / `GetTaskSearchLogs` 当前全量拉取后在内存里裁剪；加 LIMIT 或
+  流式读取会改变返回文本 `recovered search logs (N)` 的计数语义，须先定义 (N) 的新含义，
+  本轮零改动。
+
+#### A.5.5 测试分层如实登记（§3.3）
+
+| 层 | 用例 | 说明 |
+|---|---|---|
+| `performSearcher` 入口 | 3 | 链真死（canceled ctx + 模型失败）→ 断言回填、stop reason、无重试、`ctx` 未继承；成功路径 → 断言原样返回且无标注块；提交过摘要后链死 → 断言摘要仍被转发（`/review` 追加，防 helper 绿、入口漏转发） |
+| `recoverPartialSearch` | 6 | 摘要在前、全空仍说话、DB 读失败不 panic（banner 只留分类词 + `NotContains` 原始驱动错误文本）、`WithoutCancel`+10s 上限绑定 + task 级回退、64KB 截断 rune 安全、截断通知字节数含全部被丢条目（后两项为 `/review` 追加） |
+
+入口档桩合计约 110 行（Querier 8 方法 + Flow/Context executor + provider fake），**超过计划里
+预估的 ~60 行**，但按计划保留的最低档「2 个入口用例 + 4 个 helper 用例」执行后，合入前
+`/review` 又追加了 1 个入口 + 2 个 helper 用例，最终 3 + 6，全程未虚报覆盖。
+入口用例经**变异验证**：把恢复调用改回 `finalText = searchResult.Result` 后
+`TestPerformSearcherChainDeathReturnsRecoveredSearchLogs` 立即失败于 `Should NOT be empty`，
+证明它钉住的正是修复前的作废行为。
+
