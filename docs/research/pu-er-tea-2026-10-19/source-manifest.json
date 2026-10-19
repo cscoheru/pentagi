@@ -1,0 +1,62 @@
+{
+  "schema": "pentagi.research-manifest/v1",
+  "generated_at": "2026-10-19T14:18:45Z",
+  "generator": "./generate-manifest.sh",
+  "source": {
+    "system": "PentAGI",
+    "flow_id": 23,
+    "task_id": 20,
+    "subtask_id": 289,
+    "subtask_status": "failed",
+    "trace_id": "a803fa7652b0607ea7e8b3b876b8b366",
+    "model": "MiniMax-M3",
+    "provider": "minimax",
+    "window_start": "2026-10-19T13:19:25Z",
+    "window_end": "2026-10-19T13:22:48Z",
+    "msglog_ids": [3726, 3742],
+    "msglog_id_range": "3726-3742",
+    "msglog_count": 17,
+    "raw_dump": "/Users/kjonekong/.claude/projects/-Users-kjonekong-projects-pentAGI/b79ad017-ad62-40c6-bd3f-21f211828fc8/tool-results/call_u1ym2qxeie00r7qkrjh09dr9.json"
+  },
+  "counts": {
+    "searxng_results": 29,
+    "browser_attempts": 12,
+    "browser_failures": 12,
+    "valid_report_items": 22,
+    "report_items_industry_media": 7,
+    "report_items_brand_activity": 15,
+    "report_items_tieba": 0,
+    "report_items_social": 0,
+    "results_with_published_date": 0,
+    "hottest_topics": 5,
+    "trends": 10
+  },
+  "files": [
+    { "path": "README.md", "bucket": "index", "role": "navigation index and quick facts", "bytes": 5776, "sha256": "a823df6189df299f3188723f71f317877bbe07d4834aea6102795063026e8f8f" },
+    { "path": "report.md", "bucket": "report", "role": "full four-section Chinese report with limitations", "bytes": 20382, "sha256": "b7e9075c1ba2c78bf29f039c23207c6ef447cc960e10465a82826c3b6ac2b35e" },
+    { "path": "hot/hottest-topics.md", "bucket": "hot", "role": "hottest topics with ranking method and evidence", "bytes": 7394, "sha256": "4eadd3d407c25720657d46a47ba067c2832b759e83b87d1ae680aee92634b0a2" },
+    { "path": "trends/trends.md", "bucket": "trends", "role": "structural trends with evidence-strength grading", "bytes": 9633, "sha256": "f8b8811e68268428f5f9ca425fb567d20a076d75147c89c2c2981b3473cf353d" },
+    { "path": "analysis/blocked-causes.md", "bucket": "analysis", "role": "code-level root-cause analysis of retrieval blocking", "bytes": 17639, "sha256": "6dfac00914dbc3598e7f3712410b289826145c4cc20c4b81a5939cdd4c4ce6d8" },
+    { "path": "raw/01-msglog-index.md", "bucket": "raw", "role": "17-row msglog call index", "bytes": 3204, "sha256": "423328a0411cecb223d42a0dea5bc358684d7aaa85ef9ae7e998d64c50125b71" },
+    { "path": "raw/02-searxng-results.md", "bucket": "raw", "role": "verbatim 29 Searxng results (primary evidence)", "bytes": 15073, "sha256": "77654c44212d8aaaf52182fcd22a0abf41adae81a8fa51fbc3f789d478aebd50" },
+    { "path": "raw/03-browser-failures.md", "bucket": "raw", "role": "verbatim 12 browser failures with root-cause table", "bytes": 11657, "sha256": "101c8d4a0eea3b06a3dc302b3135a353a7b377869619c7765226205235802c9e" },
+    { "path": "raw/04-memory-store-hit.md", "bucket": "raw", "role": "PentAGI vector-memory hit record (URLs redacted)", "bytes": 2790, "sha256": "25fe5c4d71174755c3f7feebd72b7e290864a379724faf359bbff5d560fc67a4" },
+    { "path": "raw/05-task-prompt.md", "bucket": "raw", "role": "original task prompt text", "bytes": 1926, "sha256": "aff929741c9d36b310be157360fa9ef4cc5d02c6537c02a4d09fc97d1eda2781" }
+  ],
+  "buckets": {
+    "hot":    { "dir": "hot/",    "files": ["hot/hottest-topics.md"], "meaning": "current hottest 5 topics" },
+    "trends": { "dir": "trends/", "files": ["trends/trends.md"], "meaning": "structural directions with evidence strength" },
+    "raw":    { "dir": "raw/",    "files": ["raw/01-msglog-index.md", "raw/02-searxng-results.md", "raw/03-browser-failures.md", "raw/04-memory-store-hit.md", "raw/05-task-prompt.md"], "meaning": "unprocessed retrieval evidence and call trace" },
+    "report": { "dir": ".",       "files": ["report.md"], "meaning": "assembled report" },
+    "analysis": { "dir": "analysis/", "files": ["analysis/blocked-causes.md"], "meaning": "why retrieval was blocked and how to get past it" }
+  },
+  "constraints": {
+    "web_search_and_fetch_only": true,
+    "no_port_scan_no_vuln_probe": true,
+    "no_captcha_bypass_no_proxy_rotation": true,
+    "all_items_from_retrieved_pages": true,
+    "unconfirmable_dates_marked": "日期未确认",
+    "fabricated_dates": false,
+    "memory_store_used_as_source": false
+  }
+}
