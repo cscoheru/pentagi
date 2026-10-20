@@ -22,6 +22,7 @@ import (
 	"pentagi/pkg/graphiti"
 	"pentagi/pkg/providers/embeddings"
 	"pentagi/pkg/schema"
+	"pentagi/pkg/tools/flaresolverr"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -381,6 +382,17 @@ func NewFlowToolsExecutor(
 
 	if sharedReplacerErr != nil {
 		return nil, fmt.Errorf("failed to create replacer: %v", sharedReplacerErr)
+	}
+
+	// Install the FlareSolverr fallback used by the browser tool when the
+	// primary scraper meets a JavaScript challenge. A missing URL yields an
+	// unavailable client, so the fallback is simply disabled.
+	if cfg.FlaresolverrURL != "" {
+		jar, err := flaresolverr.LoadCookieJar(cfg.FlaresolverrCookieJar)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load flaresolverr cookie jar: %v", err)
+		}
+		SetDefaultFlareSolverr(flaresolverr.NewClient(cfg.FlaresolverrURL, flaresolverr.WithCookieJar(jar)))
 	}
 
 	return &flowToolsExecutor{

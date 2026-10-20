@@ -42,3 +42,6 @@ Thumbs.db
 # Local credentials for research tooling - never commit
 docs/user_*.md
 docs/*.env
+
+# Login cookie jar for the FlareSolverr fallback - never commit
+flaresolverr-cookies.json

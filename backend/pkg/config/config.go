@@ -76,6 +76,10 @@ type Config struct {
 	ScraperPublicURL  string `env:"SCRAPER_PUBLIC_URL"`
 	ScraperPrivateURL string `env:"SCRAPER_PRIVATE_URL"`
 
+	// === FlareSolverr fallback (JS challenge / login pages) ===
+	FlaresolverrURL       string `env:"FLARESOLVERR_URL"`
+	FlaresolverrCookieJar string `env:"FLARESOLVERR_COOKIE_JAR"`
+
 	// === LLM Provider: OpenAI ===
 	OpenAIKey       string `env:"OPEN_AI_KEY"`
 	OpenAIServerURL string `env:"OPEN_AI_SERVER_URL" envDefault:"https://api.openai.com/v1"`

@@ -17,6 +17,7 @@ import (
 
 	obs "pentagi/pkg/observability"
 	"pentagi/pkg/observability/langfuse"
+	"pentagi/pkg/tools/flaresolverr"
 
 	"github.com/sirupsen/logrus"
 )
@@ -27,6 +28,16 @@ const (
 	minImgContentSize        = 2048
 	maxScraperErrorBodyBytes = 512
 )
+
+// defaultFlareSolverr is the process-wide fallback, installed once from
+// startup config. Browser tools use it when they were not given an explicit
+// fetcher.
+var defaultFlareSolverr flaresolverrFetcher
+
+// SetDefaultFlareSolverr installs the process-wide FlareSolverr fallback.
+func SetDefaultFlareSolverr(f flaresolverrFetcher) {
+	defaultFlareSolverr = f
+}
 
 // nonHTMLExtensions lists URL path suffixes that point to resources the scraper
 // cannot render as text. When a URL matches, the browser tool returns a
@@ -75,14 +86,24 @@ type browser struct {
 	scPrvURL  string
 	scPubURL  string
 	scp       ScreenshotProvider
+	fs        flaresolverrFetcher
+}
+
+// flaresolverrFetcher is the fallback used when the primary scraper meets a
+// JavaScript challenge. It is an interface so tests can stub it without a
+// live FlareSolverr instance.
+type flaresolverrFetcher interface {
+	Available() bool
+	FetchWithRetry(ctx context.Context, target string, attempts int) (*flaresolverr.Solution, error)
 }
 
 func NewBrowserTool(
 	flowID int64, taskID, subtaskID *int64,
 	dataDir, scPrvURL, scPubURL string,
 	scp ScreenshotProvider,
+	fs ...flaresolverrFetcher,
 ) Tool {
-	return &browser{
+	b := &browser{
 		flowID:    flowID,
 		taskID:    taskID,
 		subtaskID: subtaskID,
@@ -91,6 +112,10 @@ func NewBrowserTool(
 		scPubURL:  scPubURL,
 		scp:       scp,
 	}
+	if len(fs) > 0 {
+		b.fs = fs[0]
+	}
+	return b
 }
 
 func (b *browser) wrapCommandResult(ctx context.Context, name, result, url, screen string, err error) (string, error) {
@@ -381,19 +406,9 @@ func (b *browser) getMD(targetURL string) (string, error) {
 		)
 	}
 
-	scraperURL, err := b.resolveUrl(targetURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve url: %w", err)
-	}
-
-	query := scraperURL.Query()
-	query.Add("url", targetURL)
-	scraperURL.Path = "/markdown"
-	scraperURL.RawQuery = query.Encode()
-
-	content, err := b.callScraper(scraperURL.String())
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch content by url '%s': %w", targetURL, err)
+	content, ok := b.scrapeOrFallback(targetURL, "markdown")
+	if !ok {
+		return "", fmt.Errorf("failed to fetch content by url '%s'", targetURL)
 	}
 	if len(content) < minMdContentSize {
 		return fmt.Sprintf(
@@ -405,6 +420,98 @@ func (b *browser) getMD(targetURL string) (string, error) {
 	return string(content), nil
 }
 
+// scrapeOrFallback fetches through the primary scraper and, when the result
+// is a known JavaScript/login challenge page, retries with FlareSolverr. The
+// boolean is false when both paths failed.
+func (b *browser) scrapeOrFallback(targetURL, action string) ([]byte, bool) {
+	scraperPath := "/" + action
+	scraperURL, err := b.resolveUrl(targetURL)
+	if err != nil {
+		return nil, false
+	}
+	query := scraperURL.Query()
+	query.Add("url", targetURL)
+	scraperURL.Path = scraperPath
+	scraperURL.RawQuery = query.Encode()
+
+	content, err := b.callScraper(scraperURL.String())
+	if err == nil && !looksLikeChallenge(content) {
+		return content, true
+	}
+	if err != nil {
+		logrus.WithError(err).WithField("url", targetURL).Debug("primary scraper failed")
+	}
+
+	if fallback := b.fetchViaFlareSolverr(targetURL, action); fallback != nil {
+		return fallback, true
+	}
+	if err != nil {
+		return nil, false
+	}
+	return content, true
+}
+
+// fetchViaFlareSolverr renders the page through the FlareSolverr fallback.
+// It returns nil when the fallback is unavailable or cannot solve the page.
+func (b *browser) fetchViaFlareSolverr(targetURL, action string) []byte {
+	fetcher := b.fs
+	if fetcher == nil {
+		fetcher = defaultFlareSolverr
+	}
+	if fetcher == nil || !fetcher.Available() {
+		return nil
+	}
+	solution, err := fetcher.FetchWithRetry(context.Background(), targetURL, flaresolverrFetchAttempts)
+	if err != nil {
+		logrus.WithError(err).WithField("url", targetURL).Debug("flaresolverr fallback failed")
+		return nil
+	}
+	switch action {
+	case "markdown":
+		return []byte(flaresolverr.HTMLToMarkdown(solution.HTML))
+	default:
+		return []byte(solution.HTML)
+	}
+}
+
+// looksLikeChallenge reports whether scraper output is the anti-bot/login
+// interstitial rather than the requested page.
+func looksLikeChallenge(content []byte) bool {
+	if len(content) == 0 {
+		return false
+	}
+	head := string(content)
+	if len(head) > challengeProbeBytes {
+		head = head[:challengeProbeBytes]
+	}
+	lower := strings.ToLower(head)
+	for _, marker := range challengeMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	challengeProbeBytes       = 8192
+	flaresolverrFetchAttempts = 3
+)
+
+// challengeMarkers are the signatures of the interstitial pages seen in
+// flow 23: Baidu's BiocFacade, Weibo's visitor login, and generic
+// "log in to see more" walls.
+var challengeMarkers = []string{
+	"biocfacade",
+	"百度安全验证",
+	"安全验证",
+	"zse-ck",
+	"sina visitor",
+	"登录后查看",
+	"请登录后查看",
+	"扫码登录",
+}
+
 func (b *browser) getHTML(targetURL string) (string, error) {
 	if isBinaryURL(targetURL) {
 		return "", fmt.Errorf(
@@ -413,19 +520,9 @@ func (b *browser) getHTML(targetURL string) (string, error) {
 		)
 	}
 
-	scraperURL, err := b.resolveUrl(targetURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve url: %w", err)
-	}
-
-	query := scraperURL.Query()
-	query.Add("url", targetURL)
-	scraperURL.Path = "/html"
-	scraperURL.RawQuery = query.Encode()
-
-	content, err := b.callScraper(scraperURL.String())
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch content by url '%s': %w", targetURL, err)
+	content, ok := b.scrapeOrFallback(targetURL, "html")
+	if !ok {
+		return "", fmt.Errorf("failed to fetch content by url '%s'", targetURL)
 	}
 	if len(content) < minHtmlContentSize {
 		return fmt.Sprintf(

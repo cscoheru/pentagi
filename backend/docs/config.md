@@ -699,6 +699,35 @@ screenshotTool = &functions.ScreenshotFunc{
 }
 ```
 
+## FlareSolverr Fallback Settings
+
+These settings control the FlareSolverr fallback, a real Chrome instance used when the primary scraper returns a JavaScript challenge or a login wall (Baidu Tieba and similar Chinese forums).
+
+| Option                 | Environment Variable       | Default Value | Description                                                        |
+| ---------------------- | -------------------------- | ------------- | ------------------------------------------------------------------ |
+| FlaresolverrURL        | `FLARESOLVERR_URL`         | *(none)*      | In-network address of the FlareSolverr service, e.g. `http://flaresolverr:8191` |
+| FlaresolverrCookieJar  | `FLARESOLVERR_COOKIE_JAR`  | *(none)*      | Path to the cookie jar file with per-host login cookies             |
+
+### Usage Details
+
+The browser tool fetches through the primary scraper first. When the response is a known challenge page (`BiocFacade`, `zse-ck`, `Sina Visitor`, "log in to see more"), it retries through FlareSolverr, which runs a real Chrome and can execute the challenge JavaScript.
+
+The cookie jar is a server-side credential file. Its shape is a map of host to cookies:
+
+```json
+{
+  "tieba.baidu.com": [{"name": "BDUSS", "value": "..."}],
+  "www.zhihu.com": [{"name": "z_c0", "value": "..."}]
+}
+```
+
+Two properties of the implementation are worth knowing:
+
+- Every cookie is rewritten to the **exact target host** before it is sent. Chrome's `addCookie` rejects a leading-dot domain such as `.baidu.com` for a page on `tieba.baidu.com`, and the request then fails with a domain mismatch.
+- The cookie set must be the one the browser **actually sends to that host**. Replaying cookies captured in a different context (for example a login-page capture) makes Baidu redirect in a loop.
+
+Keep the jar out of git and readable only by the PentAGI user. `FLARESOLVERR_LOG_LEVEL` must stay at `warning`: at `info` FlareSolverr logs the full request body, which contains these cookies.
+
 These URLs serve different purposes:
 - **ScraperPublicURL**: Used when generating URLs that will be accessed by the client (browser)
 - **ScraperPrivateURL**: Used for internal communication between the backend and the scraper service

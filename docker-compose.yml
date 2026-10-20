@@ -126,6 +126,8 @@ services:
       - TERMINAL_TOOL_TIMEOUT=${TERMINAL_TOOL_TIMEOUT:-}
       - SCRAPER_PUBLIC_URL=${SCRAPER_PUBLIC_URL:-}
       - SCRAPER_PRIVATE_URL=${SCRAPER_PRIVATE_URL:-}
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-}
+      - FLARESOLVERR_COOKIE_JAR=${FLARESOLVERR_COOKIE_JAR:-}
       - GRAPHITI_ENABLED=${GRAPHITI_ENABLED:-}
       - GRAPHITI_TIMEOUT=${GRAPHITI_TIMEOUT:-}
       - GRAPHITI_URL=${GRAPHITI_URL:-}
@@ -210,6 +212,7 @@ services:
       - ${PENTAGI_OLLAMA_SERVER_CONFIG_PATH:-./example.ollama.provider.yml}:/opt/pentagi/conf/ollama.provider.yml
       - ${PENTAGI_BEDROCK_CONFIG_PATH:-./example.bedrock.provider.yml}:/opt/pentagi/conf/bedrock.provider.yml
       - ${PENTAGI_DOCKER_CERT_PATH:-./docker-ssl}:/opt/pentagi/docker/ssl
+      - ${FLARESOLVERR_COOKIE_JAR_HOST_PATH:-./flaresolverr-cookies.json}:/opt/pentagi/conf/flaresolverr-cookies.json:ro
     user: root:root # while using docker.sock
     networks:
       - pentagi-network
@@ -287,6 +290,33 @@ services:
         max-file: "7"
     volumes:
       - scraper-ssl:/usr/src/app/ssl
+    networks:
+      - pentagi-network
+    shm_size: 2g
+
+  # Fallback browser for pages behind a JavaScript challenge (Baidu Tieba and
+  # similar). The browser tool uses it when the primary scraper returns a
+  # challenge page. LOG_LEVEL is set to warning on purpose: at info level
+  # FlareSolverr logs the full request body, which includes the session
+  # cookies of the cookie jar.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: unless-stopped
+    container_name: flaresolverr
+    hostname: flaresolverr
+    mem_limit: 1.2g
+    expose:
+      - 8191/tcp
+    ports:
+      - ${FLARESOLVERR_LISTEN_IP:-127.0.0.1}:${FLARESOLVERR_LISTEN_PORT:-8191}:8191
+    environment:
+      - LOG_LEVEL=${FLARESOLVERR_LOG_LEVEL:-warning}
+      - LOG_HTML=false
+      - CAPTCHA_SOLVER=none
+    logging:
+      options:
+        max-size: 50m
+        max-file: "7"
     networks:
       - pentagi-network
     shm_size: 2g
