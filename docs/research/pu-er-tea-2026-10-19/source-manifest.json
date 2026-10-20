@@ -1,62 +1,65 @@
 {
-  "schema": "pentagi.research-manifest/v1",
-  "generated_at": "2026-10-19T14:18:45Z",
+  "schema": "pentagi.research-manifest/v2",
+  "generated_at": "2026-10-20T04:55:54Z",
   "generator": "./generate-manifest.sh",
+
   "source": {
     "system": "PentAGI",
     "flow_id": 23,
     "task_id": 20,
-    "subtask_id": 289,
-    "subtask_status": "failed",
     "trace_id": "a803fa7652b0607ea7e8b3b876b8b366",
     "model": "MiniMax-M3",
     "provider": "minimax",
     "window_start": "2026-10-19T13:19:25Z",
-    "window_end": "2026-10-19T13:22:48Z",
-    "msglog_ids": [3726, 3742],
-    "msglog_id_range": "3726-3742",
-    "msglog_count": 17,
-    "raw_dump": "/Users/kjonekong/.claude/projects/-Users-kjonekong-projects-pentAGI/b79ad017-ad62-40c6-bd3f-21f211828fc8/tool-results/call_u1ym2qxeie00r7qkrjh09dr9.json"
+    "window_end": "2026-10-19T13:37:10Z",
+    "msglog_id_range": "3726-3751",
+    "msglog_count": 26,
+    "toolcall_id_range": "4077-4102",
+    "toolcall_count": 26,
+    "searchlog_id_range": "513-521",
+    "searchlog_count": 9,
+    "search_engine_counts": {"tavily": 7, "searxng": 2}
   },
+
   "counts": {
     "searxng_results": 29,
     "browser_attempts": 12,
     "browser_failures": 12,
-    "valid_report_items": 22,
-    "report_items_industry_media": 7,
-    "report_items_brand_activity": 15,
+    "valid_report_items_industry_media": 7,
     "report_items_tieba": 0,
     "report_items_social": 0,
     "results_with_published_date": 0,
     "hottest_topics": 5,
     "trends": 10
   },
-  "files": [
-    { "path": "README.md", "bucket": "index", "role": "navigation index and quick facts", "bytes": 5776, "sha256": "a823df6189df299f3188723f71f317877bbe07d4834aea6102795063026e8f8f" },
-    { "path": "report.md", "bucket": "report", "role": "full four-section Chinese report with limitations", "bytes": 20382, "sha256": "b7e9075c1ba2c78bf29f039c23207c6ef447cc960e10465a82826c3b6ac2b35e" },
-    { "path": "hot/hottest-topics.md", "bucket": "hot", "role": "hottest topics with ranking method and evidence", "bytes": 7394, "sha256": "4eadd3d407c25720657d46a47ba067c2832b759e83b87d1ae680aee92634b0a2" },
-    { "path": "trends/trends.md", "bucket": "trends", "role": "structural trends with evidence-strength grading", "bytes": 9633, "sha256": "f8b8811e68268428f5f9ca425fb567d20a076d75147c89c2c2981b3473cf353d" },
-    { "path": "analysis/blocked-causes.md", "bucket": "analysis", "role": "code-level root-cause analysis of retrieval blocking", "bytes": 17639, "sha256": "6dfac00914dbc3598e7f3712410b289826145c4cc20c4b81a5939cdd4c4ce6d8" },
-    { "path": "raw/01-msglog-index.md", "bucket": "raw", "role": "17-row msglog call index", "bytes": 3204, "sha256": "423328a0411cecb223d42a0dea5bc358684d7aaa85ef9ae7e998d64c50125b71" },
-    { "path": "raw/02-searxng-results.md", "bucket": "raw", "role": "verbatim 29 Searxng results (primary evidence)", "bytes": 15073, "sha256": "77654c44212d8aaaf52182fcd22a0abf41adae81a8fa51fbc3f789d478aebd50" },
-    { "path": "raw/03-browser-failures.md", "bucket": "raw", "role": "verbatim 12 browser failures with root-cause table", "bytes": 11657, "sha256": "101c8d4a0eea3b06a3dc302b3135a353a7b377869619c7765226205235802c9e" },
-    { "path": "raw/04-memory-store-hit.md", "bucket": "raw", "role": "PentAGI vector-memory hit record (URLs redacted)", "bytes": 2790, "sha256": "25fe5c4d71174755c3f7feebd72b7e290864a379724faf359bbff5d560fc67a4" },
-    { "path": "raw/05-task-prompt.md", "bucket": "raw", "role": "original task prompt text", "bytes": 1926, "sha256": "aff929741c9d36b310be157360fa9ef4cc5d02c6537c02a4d09fc97d1eda2781" }
-  ],
+
   "buckets": {
-    "hot":    { "dir": "hot/",    "files": ["hot/hottest-topics.md"], "meaning": "current hottest 5 topics" },
-    "trends": { "dir": "trends/", "files": ["trends/trends.md"], "meaning": "structural directions with evidence strength" },
-    "raw":    { "dir": "raw/",    "files": ["raw/01-msglog-index.md", "raw/02-searxng-results.md", "raw/03-browser-failures.md", "raw/04-memory-store-hit.md", "raw/05-task-prompt.md"], "meaning": "unprocessed retrieval evidence and call trace" },
-    "report": { "dir": ".",       "files": ["report.md"], "meaning": "assembled report" },
-    "analysis": { "dir": "analysis/", "files": ["analysis/blocked-causes.md"], "meaning": "why retrieval was blocked and how to get past it" }
+    "hot":    { "dir": "hot/", "role": "current hottest topics" },
+    "trends": { "dir": "trends/", "role": "structural directions" },
+    "raw":    { "dir": "raw/", "role": "unprocessed retrieval evidence and call trace" },
+    "analysis": { "dir": "analysis/", "role": "why retrieval was blocked and how to get past it" }
   },
+
   "constraints": {
     "web_search_and_fetch_only": true,
     "no_port_scan_no_vuln_probe": true,
     "no_captcha_bypass_no_proxy_rotation": true,
     "all_items_from_retrieved_pages": true,
     "unconfirmable_dates_marked": "日期未确认",
-    "fabricated_dates": false,
     "memory_store_used_as_source": false
-  }
+  },
+
+  "files": [
+    { "path": "README.md", "bytes": 4060, "sha256": "76a9d796e84ddda87214871b29640eef7302617077906a2069da94061716a9a0" },
+    { "path": "report.md", "bytes": 4043, "sha256": "c39aecc20d850950bd9c34b0c5515abbf1eb18525fca7395a2de395fb7f194ef" },
+    { "path": "hot/hottest-topics.md", "bytes": 2240, "sha256": "61833d2bdb28e9b19fbde7e60f09e3857932385f0537840ab9fc95a918e9204e" },
+    { "path": "trends/trends.md", "bytes": 2616, "sha256": "32d857be2d2bf23549e25f393a3e158546f57e34244cd3dd13f9867e19a4b762" },
+    { "path": "analysis/blocked-causes.md", "bytes": 8436, "sha256": "6710cd21bd9017ed9bbe5524392e8332410f1fa20accda4430a24ac87c160412" },
+    { "path": "raw/01-msglog-index.md", "bytes": 2356, "sha256": "41bc3b64b2f7438e4c2ed8c98f654f332f729ac1ba847e57a5fa2bed54c55ce5" },
+    { "path": "raw/02-search-results.md", "bytes": 161848, "sha256": "7eae74c369f60fc9d1bdc09207bbc919dfe2d2279d60c56ef499ddae2cedc41e" },
+    { "path": "raw/03-tavily-answers.md", "bytes": 108715, "sha256": "1b463ded7b42bf45070d2b966be40e897d16abb502079e1d111b0ba9c50fc8bd" },
+    { "path": "raw/04-browser-attempts.md", "bytes": 13500, "sha256": "69a86acc8a9437f044dd20fe6031f54522049397e53a3c1028b412a8521bc830" },
+    { "path": "raw/05-search-partial.md", "bytes": 547, "sha256": "fbcbef9f864047f7367acae1960251796ffd0ae6f9f5b1e4ee69211886ae65c0" },
+    { "path": "raw/06-toolcalls-full.md", "bytes": 24819, "sha256": "2425bd358fd7182dec7f57a0f9e1dbc6120ff75ef5e3a973598a44eadab4595d" }
+  ]
 }

@@ -1,333 +1,135 @@
-# "检索被拦截"到底是 PentAGI 的能力问题还是别的原因？
+# "检索被拦截"到底是怎么回事？（2026-10-20 重写版）
 
-> 基于 flow 23（subtask 289）的 12 次 browser 失败 + 3 次 search（2 成功 / 1 空）逐条归因，
-> 以及对 `backend/pkg/tools/browser.go`、`backend/pkg/tools/web_search.go`、
-> `backend/pkg/tools/searchers/searxng.go`、`backend/pkg/config/config.go`、`docker-compose.yml` 的代码级核查。
-
----
-
-## 0. 结论速览
-
-| # | 根因 | 占比 | 归属 | 能否跨越 |
-|---|---|---|---|---|
-| A | **Agent 自行猜域名**（DNS 失败 / 404 / 域名停放 / 证书错误） | **7 / 12 = 58%** | ❌ 不是 PentAGI 能力问题，是 Agent 行为 | ✅ **零成本可跨越**（改提示词） |
-| B | **反爬 JS 挑战 / 客户端渲染空壳**（贴吧·微博·知乎·小红书） | 4 / 12 = 33% | ✅ **是 PentAGI 工具能力边界** | ⚠️ 部分可跨越（需改配置或上游 scraper） |
-| C | **站点侧 502** | 1 / 12 = 8% | ❌ 站点瞬时故障 | ✅ 重试即可 |
-| D | **flow 整体失败**（subtask 289 = failed） | — | ❌ **VPS 隧道抖动**，环境问题 | ✅ 修基础设施 |
-
-**一句话**：**主要不是 PentAGI 不行，是 Agent 在瞎猜域名。** 58% 的失败本可通过"先搜索拿到真实 URL 再抓取"完全避免；真正的 PentAGI 能力边界只占 33%，且其中一半可以用配置绕过。
-
-另外还有一个**未被任何失败记录反映、但直接损伤了产出质量**的问题：Searxng 以 `categories=general` 检索，导致 29 条结果**全部没有 `publishedDate`**（见 §3.5）——这正是任务里"发布日期必须标注、无法确认写'日期未确认'"变成大面积"日期未确认"的根因。
+> 基于 flow 23 的**全量 26 条 msglog、26 条 toolcall、9 条 searchlog**逐条归因。
+> 本版**推翻了 2026-10-19 初版的 5 处推断**，因果链完全改变。原始证据见 `raw/`。
 
 ---
 
-## 1. 失败根因归类（逐条证据）
+## 0. 一句话结论
 
-| msglog | 目标 | 现象 | 归类 |
+**检索没有被反爬拦住。** 搜索链路**成功恢复了大量结果**，但结果在**返回模型的边界被一行上下文处理逻辑丢弃**——
+持久化用了已被预算杀死的 `ctx`，handler 成功拿到的 64KB 因此被 `return "", err` 扔掉，
+模型从头到尾没看到这些数据，只收到占位串 "the call was not handled, please try again"，于是判定搜索失败。
+
+这是 **PentAGI 返回边界的缺陷（代码问题）**，不是目标站的反爬能力问题。
+修复见 `docs/task-convergence-2026-10-01-audit.md` §A.6（audit item E）。
+
+---
+
+## 1. 真实失败链（已用 DB 逐条验证）
+
+1. `search` 工具委派给 searcher 子 agent，串行跑多个站点，耗时超过
+   `maxSubtaskRunDuration=5m`（`backend/pkg/controller/task.go:345`）与
+   `maxTaskRunDuration=15m`（`:343`）→ 链被预算终止，`budget_exhausted`。
+2. 框架**正确恢复**了部分结果：toolcall 4090 = 27,226 B、4094 = 37,563 B，都以
+   `[INCOMPLETE SEARCH]` 开头（`backend/pkg/providers/performers.go`）。
+3. **结果在返回边界被丢弃**：`backend/pkg/tools/executor.go` 在 handler 成功返回后，
+   `storeToolResult(ctx, ...)` 与 `mlp.UpdateMsgResult(ctx, ...)` 用的是**已取消的原始 ctx**，
+   两者失败 → `Execute` 返回 `("", err)`。实测 **msglog 3739 / 3742 / 3749 的 result_len 全为 0**
+   （三条，不是初版以为的两条），而对应 toolcall 存有 27KB+ 数据。
+4. `pkg/cast` 看到"有工具调用无响应"，用占位串
+   `the call was not handled, please try again`（`pkg/cast/chain_ast.go`）补上。
+5. 模型因此判定搜索失败，最终 report（msglog 3751）原话：
+   > "此次任务未能成功执行。搜索工具调用失败……错误提示为 'the call was not handled,
+   > please try again'。" 并上报 `report_result {success:false}`。
+
+**模型从未看到 `[INCOMPLETE SEARCH]` 横幅。** "模型误读部分成功横幅"的旧假设不成立。
+
+---
+
+## 2. 初版被推翻的 5 处推断
+
+| # | 初版（2026-10-19）结论 | 全量证据 | 真相 |
 |---|---|---|---|
-| 3728 | chinataxl.org | `net::ERR_NAME_NOT_RESOLVED` | **A 猜域名** |
-| 3731 | sayingtea.com | `net::ERR_NAME_NOT_RESOLVED` | **A 猜域名** |
-| 3733 | china-tea.com | `net::ERR_NAME_NOT_RESOLVED` | **A 猜域名** |
-| 3732 | 普洱中国 | nginx 404 | **A 猜域名** |
-| 3729 | yunnancn.com | 4.cn 域名停放页 | **A 猜域名** |
-| 3730 | teayu.com | HugeDomains 停放页 | **A 猜域名** |
-| 3734 | dyfc.com.cn | `net::ERR_CERT_AUTHORITY_INVALID` | **A 猜域名**（真官网是 `taetea.com.cn`，检索已给出，Agent 没抓） |
-| 3727 | 百度贴吧 | 百度安全验证 `BiocFacade.js` | **B 反爬** |
-| 3737 | 微博 | `Sina Visitor System` + 设备指纹 | **B 反爬** |
-| 3736 | 知乎 | `zse-ck` JS 挑战 | **B 反爬** |
-| 3735 | 小红书 | 19KB 客户端 JS 空壳，`普洱` 命中 0 次 | **B 空壳** |
-| 3738 | 搜狐 | `502 Bad Gateway` (openresty) | **C 站点故障** |
+| 1 | "flaresolverr 解不了贴吧/知乎/小红书" | 只测了**无 cookie 的裸请求** | 注入已登录 cookie 后：贴吧 836KB 真实主题、知乎 163KB 真实搜索结果。这是**登录 cookie 门**，不是 JS 挑战门（见 §5） |
+| 2 | "Tavily/Firecrawl 未配置，只有 Searxng" | searchlogs 513–521 中 **7 次 tavily、2 次 searxng**，多次 `attempts=1` 命中 | Tavily 已配置且是主要引擎；Firecrawl 才是未配置（402，用户决定不充值） |
+| 3 | "只有 Searxng 的 29 条链接，且 29/29 无发布日期" | Tavily 合成答案（msglog 3740/3741/3743/3745-3748）**自带日期** | "无日期"只适用于 Searxng 通用类目；Tavily 答案含 2026-09-28、2026-04、2026-03-31 等明确日期 |
+| 4 | "中国茶叶流通协会 ctma.com.cn 零条目" | msglog 3748 明确出现 "China Tea Merchants Association (CTMA)" 与 ctma 来源 | 协会口径**被检索到了**，只是藏在旧版未导出的 Tavily 答案里 |
+| 5 | "12 次 browser 调用属于 subtask 289" | toolcalls 4077–4088 的 `subtask_id` 全为 **NULL** | 它们是**任务级**调用，不是任何子任务 |
 
-> 全部失败均为验证码 / 登录墙 / 反爬 / 服务器错误 / DNS 或证书问题 / 域名失效，**未使用任何验证码识别、代理轮换或指纹伪装**。
+另外两处取样偏差：
+- 旧版窗口只取 13:19:25–13:22:48（3.5 分钟），真实窗口是 **13:19:25–13:37:10（约 18 分钟）**。
+- 旧版声称 "2026 年 8–10 月行业新闻空窗约 3 个月" —— Tavily 答案里有
+  `2026-09-28 生肖饼`、`2026-10-07 大益价格表` 等，**空窗是取样产物，不成立**。
 
 ---
 
-## 2. 为什么说 A 类（猜域名）是 Agent 行为而非工具缺陷？
+## 3. browser 12 次抓取的真实归因（raw/04）
 
-证据链：
+| msglog | 目标 | 现象 | 根因 |
+|---|---|---|---|
+| 3727 | tieba.baidu.com 普洱茶吧 | 2602B，`BiocFacade.js` 安全验证页 | **登录 cookie 门**（已证实可绕过，见 §5） |
+| 3728 | chinataxl.org（猜域名） | 330B | Agent 自造域名，DNS/404 |
+| 3729 | yunnan.cn 等 | 4808B | 非目标内容 |
+| 3730 | 某站 | 32802B | 抓到但非茶主题 |
+| 3731–3734 | 4 个猜域名 | 249–330B | DNS 失败/404/停放页 |
+| 3735 | xiaohongshu | 19343B，`登录后查看` | 登录 cookie 门（小红书需短信，最难） |
+| 3736 | zhihu | 610B，正文极短 | 未登录态被折叠 |
+| 3737 | weibo | 9425B，登录页 | 登录 cookie 门（本轮已放弃微博） |
+| 3738 | sohu | 542B | 502 站点故障 |
 
-1. **同一个 flow 内的 Searxng 已经给出了真实 URL**。29 条结果里包含
-   `https://www.taetea.com.cn/`（大益集团官网）、`https://www.puercn.com/...`（茶友网）、
-   `https://zzctea.com/brand/b2-dayi`（找找茶）等真实站点。
-2. **Agent 却绕过这些 URL 去抓了猜的域名**：`dyfc.com.cn`、`china-tea.com`、`sayingtea.com`、
-   `chinataxl.org` —— 全部 `ERR_NAME_NOT_RESOLVED` 或证书错误。
-3. **这些域名不是"搜索不到"而是"根本没注册/已停放"**。Agent 的知识里对"中国普洱茶网""说茶网"有印象，
-   于是直接拼出域名去访问，而不是先搜出 URL。
-
-结论：这不是 PentAGI 的 browser 工具抓不到（它对真实 URL 是能抓的），
-而是 **Agent 跳过了"先检索拿 URL"这一步**。任务提示词里没有这条约束（见 `../raw/05-task-prompt.md`），
-默认提示词也没把"禁止猜测域名"写成硬规则。
+- **猜域名 4 次**（3731/3732/3733/3734），真实官网 `taetea.com.cn` 在搜索结果里却没抓——属 Agent 行为，可由提示词约束修复。
+- 真正的工具能力边界是 3 个登录门（贴吧/知乎/小红书）+ 1 个站点 502。
 
 ---
 
-## 3. PentAGI 能力边界的确切位置（代码级）
+## 4. 搜索链路的真实情况（raw/02、raw/03）
 
-### 3.1 browser 工具的请求面只有 1 个参数 —— 这是真正的天花板
+9 次 web_search：7 Tavily + 2 Searxng。关键 Tavily 答案覆盖：
 
-`backend/pkg/tools/browser.go:376-503`，四个动作（markdown / html / links / screenshot）构造 scraper 请求时：
+- **大益价格波动**（3743）：2101 力开天地散提 ¥5800（-500）、1801 七星千羽孔雀 ¥10.6万（+3000）；
+  `2026-09-28 生肖饼` 价格。
+- **2026 春茶临沧/西双版纳**（3746）：昔归 6800–10600 元/公斤、磨烈/小户赛区间。
+- **中国茶叶流通协会 CTMA**（3748）：协会参与的茶事活动与 2026 市场描述。
+- **李亚鹏带货**（3745）：2026-03-31 东方财富，直播 GMV 16.2 亿。
+- 另有小红书/知乎话题（3747，含非茶内容，提示 query 过宽）。
 
-```go
-query := scraperURL.Query()
-query.Add("url", targetURL)          // ← 唯一的业务参数
-scraperURL.Path = "/markdown"        // 或 /html, /links
-scraperURL.RawQuery = query.Encode()
-```
+这些**当时全部在数据库里**，但因为 §1 的返回边界缺陷，模型一条都没用上。
 
-唯一的例外是截图多一个 `fullPage=true`（`browser.go:489`）。
+---
 
-**没有的能力**：cookie / User-Agent / 请求头 / 代理 / 等待时间 / CSS selector / 交互动作 / 登录态。
+## 5. 登录态打通的实测结论（2026-10-20）
 
-直接后果：
+用已登录浏览器 profile 的 cookie 注入 flaresolverr 3.5.2：
 
-- **贴吧（BiocFacade）、微博（Sina Visitor）、知乎（zse-ck）** 全是"执行一段 JS 挑战 + 采集设备指纹"的门。
-  没有 cookie 就没有登录态，没有 UA 控制就没有正常浏览器指纹，**挑战必然失败**。
-  真人用 Chrome 能过（Chrome 自己会跑 BiocFacade），PentAGI 的 scraper 也用 Chrome，
-  但它是**无持久 profile、无 cookie、UA 固定**的会话池 → 每次都是"新用户首次访问"形态，必被拦。
-- **小红书**是纯客户端渲染：数据在 `window.__INITIAL_STATE__` / XHR 响应里。
-  scraper 返回了 19KB 的 HTML，但 `__INITIAL_STATE__` 里只有 app 配置 —— 说明
-  **要么 JS 还没跑完就取 DOM，要么数据走的是 XHR 而抓取器只取初始 HTML**。没有"等待"参数就无从控制。
-
-### 3.2 scraper 是外部镜像，能力上限被上游项目锁死
-
-`docker-compose.yml:270-292`：
-
-```yaml
-scraper:
-  image: vxcontrol/scraper:latest     # ← 不在本仓库，独立项目
-  environment:
-    - MAX_CONCURRENT_SESSIONS=${LOCAL_SCRAPER_MAX_CONCURRENT_SESSIONS:-10}
-    - USERNAME=${LOCAL_SCRAPER_USERNAME:-someuser}
-    - PASSWORD=${LOCAL_SCRAPER_PASSWORD:-somepass}
-  volumes: [scraper-ssl:/usr/src/app/ssl]
-  shm_size: 2g
-```
-
-`backend/pkg/tools/browser.go:505-520` 显示 PentAGI 只是 HTTP 客户端（65s 超时，
-`InsecureSkipVerify: true` 仅作用于**连 scraper**这一跳，不作用于目标站）。
-
-**结论**：要加 cookie 池 / 代理池 / JS 等待 / 持久 profile，必须先在 `vxcontrol/scraper` 侧实现，
-PentAGI 再透传参数。**这不是单改 PentAGI 能完成的**，但透传层改动很小（见 §4 L4）。
-
-### 3.3 web_search 的引擎链：结果来自第 8 位，说明前 7 个都没配
-
-`backend/pkg/tools/web_search.go:90-123`：
-
-```go
-ModeAnswer: {
-    EngineTavily, EngineFirecrawl, EnginePerplexity, EngineInternal, EngineTraversaal,
-    EngineGoogle, EngineDuckDuckGo, EngineSearxng, EngineShodanInternetDB,
-},
-```
-
-本次结果格式是 `# Searxng Search Results`（`searxng.go:155`）⇒ 命中的是 **`EngineSearxng`（第 8 位）**。
-按 `web_search.go:82-85` 的语义"按序遍历，跳过 `IsAvailable()==false` 的引擎，取第一个成功的"，
-可以反推出：
-
-| 引擎 | IsAvailable 判据 | 结论 |
+| 站点 | 结果 | 关键事实 |
 |---|---|---|
-| Tavily | `apiKey() != ""`（`searchers/tavily.go:280-282`） | **未配置 API Key** |
-| Firecrawl | `apiKey() != ""`（`searchers/firecrawl.go:345-347`） | **未配置 API Key** |
-| Perplexity / Traversaal / Google / DuckDuckGo | 各自 key 或可达性 | 未配置或失败 |
-| Searxng | `baseURL() != ""`（`searchers/searxng.go:42-44`） | ✅ 已配置，命中 |
-| Internal | `cfg.WebSearchInternalEnabled` | ❌ 默认关闭（见 §3.4） |
+| **贴吧** | ✅ 836–853KB 真实主题列表 | 14 个 cookie **全部改写域为 `tieba.baidu.com`**（保留 `.baidu.com` 前导点域会被 ChromeDriver 拒）；必须用浏览器**对该站实际发送**的 cookie 集，用 passport 上下文的集会 `ERR_TOO_MANY_REDIRECTS` |
+| **知乎** | ✅ 163KB，已登录态（74 封私信），搜索结果带日期/赞同数 | 浏览器 profile 本就登录，无需输密码 |
+| **小红书** | ❌ 未登录 | 登录只有手机号+短信验证码，无密码入口，需人工过一次短信 |
+| 微博 | — | 本轮按用户决定放弃 |
 
-**关键**：Tavily 和 Firecrawl 恰好是"能把搜索结果直接变成正文"的两个引擎
-（Tavily = LLM 带引用的答案，Firecrawl = 抓页面并转 markdown，天然处理 JS 渲染），
-它们没配，正是本次只能拿到"链接+摘要"、拿不到"页面正文"的原因。
-
-### 3.4 内部 analytics 引擎默认关闭 —— 它正是"搜索引擎 + 浏览器抓取"的组合
-
-`backend/pkg/config/config.go:229-237`：
-
-```go
-// The internal analytics engine is an OPTIONAL, opt-in fallback for the
-// analytic web_search modes (answer/research). It produces a synthesized answer
-// without a paid analytic API by combining link discovery + the browser scraper
-// + the summarizer. It is OFF by default because per-page scraping and
-// summarization can cost more than a purpose-built third-party analytic call.
-WebSearchInternalEnabled bool `env:"WEB_SEARCH_INTERNAL_ENABLED" envDefault:"false"`
-```
-
-它做的正是本任务缺的那一步：**先用链接发现拿到 URL，再用 browser scraper 抓正文，再摘要**。
-关着它，就只剩"链接 + 引擎摘要"这一层。
-
-### 3.5 Searxng 的 categories / time_range / language —— 本次"3 个月空窗 + 全无发布日期"的直接成因
-
-`backend/pkg/tools/searchers/searxng.go:90-105`：
-
-```go
-params.Add("q", query)
-params.Add("format", "json")
-params.Add("language", s.language())      // ← SEARXNG_LANGUAGE
-params.Add("categories", s.categories())  // ← SEARXNG_CATEGORIES，默认 "general"
-params.Add("safesearch", s.safeSearch())
-if timeRange := s.timeRange(); timeRange != "" {
-    params.Add("time_range", timeRange)   // ← SEARXNG_TIME_RANGE，默认空
-}
-```
-
-`backend/pkg/config/config.go:222-227` 的默认值：
-
-```go
-SearxngCategories string `env:"SEARXNG_CATEGORIES" envDefault:"general"`
-SearxngLanguage   string `env:"SEARXNG_LANGUAGE"`
-SearxngTimeRange  string `env:"SEARXNG_TIME_RANGE"`
-```
-
-后果有两个，都是可验证的：
-
-1. **`categories=general` → 拿不到 `publishedDate`**。
-   格式化函数**支持**输出 `**Published:**`（`searxng.go:173-175`），但本次 29 条结果里
-   `grep -c 'Published'` = **0**，`grep -c 'Author'` = **0**，而 `grep -c 'Source Engine'` = **29**。
-   引擎返回了 `engine` 字段却没返回 `publishedDate` —— 典型是 `general` 类目不带发布日期，
-   而 `news` 类目带。这直接导致任务要求的"发布日期（必须标注）"大面积退化为"日期未确认"。
-
-2. **`time_range` 为空 → 混入大量常青页面**。
-   29 条里混入了大量"价格聚合页 / 商品货架页"（dayihangqing、pinpaipuer、puercn、1688、京东、Shopee），
-   它们没有发布日期，所以即便加了 `time_range=month` 也不会被排除 —— 但**真正的新闻条目会被提上来**。
-   本次最新日期只到 2026年7月2日（找找茶产品档案）与 2026年10月（Shopee 货架），
-   **2026年8–10月的行业新闻完全缺失**。
-
-3. **`language` 为空 → 中文源覆盖受损**。
-   29 条的上游引擎分布：`google cse` 19 条 + `duckduckgo` 10 条。中文站点（大陆资讯站、
-   公众号转载、知乎专栏）在这两个引擎上的索引质量本就依赖 language 参数。
-   设 `SEARXNG_LANGUAGE=zh-CN` 会有实质改善。
-
-4. **`req.Header.Set("User-Agent", "PentAGI/1.0")`**（`searxng.go:121`）——
-   对 Searxng 自报机器人身份，部分上游引擎会降权。这不是主因，但顺手可改。
+约束：
+- 纯 HTTP 带 cookie 只回 11KB JS 壳——主题列表客户端渲染，**必须真实浏览器**。
+- flaresolverr 单次成功率约 50%（挑战是概率性的，命中挑战即重试，上限 3 次）；
+  对数据中心 IP 连打会触发升级拦截，需静置。
+- flaresolverr `LOG_LEVEL=info` 会把**完整 cookie 明文**打进日志，生产须降为 `warning`。
 
 ---
 
-## 4. 能跨越的部分 —— 按成本从低到高的六条杠杆
+## 6. 怎么跨过去（按成本）
 
-### L0 提示词层（零成本，立刻可做，预期收益最大）
+1. **★ 修返回边界缺陷**（已完成，见 audit §A.6）：持久化用
+   `context.WithoutCancel(ctx)` + 独立 10s 预算，持久化失败降级为日志、不再丢弃结果。
+2. **拆小工作单元**（已完成）：多目标问题按站点拆 `search`/子任务；searcher 迭代上限收紧到 10；
+   `[INCOMPLETE SEARCH]` 横幅增加"使用已恢复内容并标注覆盖缺口"的许可。
+3. **登录 cookie 罐 + flaresolverr 回退**（实施中）：cookie 存只读挂载文件，绝不走 tool args；
+   browser 命中挑战特征时回退。
+4. **约束 Agent 不猜域名**：搜索结果给了真实 URL 就用，禁止自造主机名（提示词层）。
+5. Firecrawl 不充值（用户决定）；小红书需人工过一次短信后导出 cookie。
 
-在任务提示词里加三条硬约束即可消灭 A 类（58%）失败：
+---
 
-```
-- 严禁猜测域名。所有待抓取的 URL 必须来自 web_search 的返回结果，禁止自行拼接域名。
-- 抓取前先确认 URL 出现在搜索结果中；对每个候选站点最多尝试 1 次直连，失败即放弃该站。
-- 当目标站点有验证码/登录墙/反爬时，改用 site: 定向检索从搜索引擎索引取该站公开内容的摘要，
-  并在报告中标注"该来源为搜索引擎索引摘要，未取得原页"。
-```
-
-第三条**不是绕过验证码**——读搜索引擎对公开页面的已索引摘要是合法公开访问路径，
-与破解验证码/伪造指纹有本质区别。
-
-**副作用（正向）**：这一改法同时也会把 B 类里贴吧的部分救回来——
-`site:tieba.baidu.com 普洱 行情` 的索引摘要可以给出帖子标题与正文片段。
-
-### L1 Searxng 配置层（改 `.env`，重启，成本 ~1 分钟，收益直接命中"日期"要求）
+## 7. 复算命令
 
 ```bash
-# .env（PentAGI 部署环境）
-SEARXNG_CATEGORIES=news,general     # news 类目带 publishedDate
-SEARXNG_TIME_RANGE=month            # 覆盖"最新资讯"语义
-SEARXNG_LANGUAGE=zh-CN              # 中文源覆盖
-SEARXNG_SAFESEARCH=0
+# msglog 全量（26 条，注意三条 result_len=0）
+docker exec pgvector psql -U postgres -d pentagidb -Atc \
+  "select id,type,task_id,subtask_id,length(coalesce(result,'')) from msglogs where flow_id=23 order by id"
+# web_search 引擎分布（7 tavily / 2 searxng）
+docker exec pgvector psql -U postgres -d pentagidb -Atc \
+  "select engine,count(*) from searchlogs where flow_id=23 group by engine"
+# browser 调用归属（subtask_id 全 NULL → 任务级）
+docker exec pgvector psql -U postgres -d pentagidb -Atc \
+  "select id,name,subtask_id,length(args::text) from toolcalls where flow_id=23 and name='browser' order by id"
 ```
-
-> 注意 `categories` 是逗号分隔的多值，Searxng 支持 `news,general` 同时返回。
-> 建议 `news` 置前，因为**带 `publishedDate` 的条目优先**。
-
-### L2 引擎配置层（加 API Key，成本 = 一次申请）
-
-| 引擎 | 环境变量 | 作用 |
-|---|---|---|
-| Tavily | `TAVILY_API_KEY` | LLM 带引用的答案，直接满足"标题+日期+URL+摘要"格式 |
-| Firecrawl | `FIRECRAWL_API_KEY` | 抓页面转 markdown，**天然处理 JS 渲染**，可救小红书类空壳站 |
-
-`searchers/tavily.go:280`、`searchers/firecrawl.go:345` 的 `IsAvailable()` 就是 `apiKey() != ""`，
-配上即自动进入 `ModeAnswer` 链首（`web_search.go:101`），优先级高于 Searxng。
-
-### L3 内部 analytics 引擎（一个开关）
-
-```bash
-WEB_SEARCH_INTERNAL_ENABLED=true
-WEB_SEARCH_INTERNAL_MAX_SITES=8        # 默认 5
-WEB_SEARCH_INTERNAL_MAX_SITE_BYTES=20480 # 默认 10240
-```
-
-代价：每个页面都要走 scraper + 摘要，会明显变慢变贵。但它能把"链接"变成"正文"，
-对"抓正文"这一步是 PentAGI 自带的、不依赖外部付费 API 的路径。
-
-### L4 工具层（改代码，需上游 scraper 配合）
-
-`browser.go` 的四个方法目前只透传 `url`。若 `vxcontrol/scraper` 侧支持
-`cookie` / `user_agent` / `wait` / `proxy` / `selector` 等参数，PentAGI 侧只需在
-`browser.go:389-392 / 421-424 / 446-449 / 488-492` 把工具入参透传下去。
-改造量：单文件、百行内。**但必须先确认上游 scraper 支持哪些参数**——
-否则改了也没用。这是**成本最高、收益最不确定**的一条。
-
-### L5 基础设施（修 VPS）
-
-`/tmp/pentagi-tunnel.log` 显示远端 `207.57.125.162` 持续 `Connection reset by peer` /
-`Operation timed out` / `No route to host`，导致 subtask 289 在 13:26:06Z 被标记 `failed`。
-本地 launchd 配置（`ControlPath=none` 必需项）没问题，**问题在远端主机**。
-可选：把 PentAGI 部署到稳定主机，或在本地跑 `docker compose up -d`。
-
----
-
-## 5. 明确不能跨越的部分（诚实边界）
-
-| 目标 | 为什么不能 | 除非 |
-|---|---|---|
-| 百度贴吧置顶帖的**完整正文 + 回复数** | BiocFacade 验证需要人机交互，工具层无解 | 人工登录 + cookie 注入（L4，需上游支持） |
-| 微博话题榜实时数据 | Sina Visitor System 强制登录，且有设备指纹采集 | 提供已登录 cookie（L4） |
-| 小红书笔记正文 | 需登录态 + 完整 JS 渲染时序 | Firecrawl（L2）或 scraper 加等待（L4） |
-| 京东/1688 的**批发成交价** | 需登录/企业价权限，页面只给引流价 | 登录态（L4） |
-| 任何需要"绕过验证码"的能力 | —— | **不追求**。任务已明确禁止 |
-
----
-
-## 6. 下一轮 flow 的执行建议（可直接落地）
-
-**环境改动（一次）**：
-```bash
-SEARXNG_CATEGORIES=news,general
-SEARXNG_TIME_RANGE=month
-SEARXNG_LANGUAGE=zh-CN
-TAVILY_API_KEY=...        # 若可申请
-FIRECRAWL_API_KEY=...     # 若可申请
-```
-
-**提示词改动（每轮）**：直接套用 §4 L0 的三条硬约束。
-
-**检索式设计**：把"普洱茶 最新资讯"拆成带 `site:` 与时间意图的多次查询，而不是一条大杂烩：
-
-```
-site:tieba.baidu.com 普洱 行情
-site:weibo.com 普洱茶
-普洱 2026 春茶 行情
-大益 新品 发布 2026
-年份普洱茶 消费趋势 报告
-```
-
-**先检索再抓取**：每条查询的返回 URL 直接进抓取队列，**不自己造域名**。
-
-**失败即换路**：任一 URL 抓取失败，立刻改用搜索引擎索引摘要，并在报告中标注来源方式。
-
----
-
-## 7. 附：本次分析引用的代码位置
-
-| 位置 | 内容 |
-|---|---|
-| `backend/pkg/tools/browser.go:376-406` | `getMD` — scraper `/markdown`，仅 `url` 参数 |
-| `backend/pkg/tools/browser.go:408-438` | `getHTML` — scraper `/html`，仅 `url` 参数 |
-| `backend/pkg/tools/browser.go:440-480` | `getLinks` — scraper `/links` |
-| `backend/pkg/tools/browser.go:482-503` | `getScreenshot` — scraper `/screenshot`，`fullPage=true` |
-| `backend/pkg/tools/browser.go:336-353` | `resolveUrl` — 按目标 IP 公私选择 scraper |
-| `backend/pkg/tools/browser.go:505-520` | `callScraper` — 65s 超时，Basic Auth 内嵌 URL |
-| `backend/pkg/tools/web_search.go:90-123` | `fallbackStrategy` — 五种 mode 的引擎链 |
-| `backend/pkg/tools/searchers/searxng.go:90-107` | Searxng 请求参数（categories / time_range / language） |
-| `backend/pkg/tools/searchers/searxng.go:149-185` | 结果格式化（支持 `**Published:**`，本次 0 次出现） |
-| `backend/pkg/tools/searchers/searxng.go:121` | `User-Agent: PentAGI/1.0` |
-| `backend/pkg/tools/searchers/tavily.go:280-282` | `IsAvailable` = `apiKey() != ""` |
-| `backend/pkg/tools/searchers/firecrawl.go:345-347` | `IsAvailable` = `apiKey() != ""` |
-| `backend/pkg/tools/searchers/searchers.go:70-90` | `Link` / `PageFetcher` 接口（内部引擎的取正文契约） |
-| `backend/pkg/config/config.go:76-77` | `SCRAPER_PUBLIC_URL` / `SCRAPER_PRIVATE_URL` |
-| `backend/pkg/config/config.go:222-227` | Searxng 全部环境变量与默认值 |
-| `backend/pkg/config/config.go:229-237` | 内部 analytics 引擎开关与限额 |
-| `docker-compose.yml:270-292` | `scraper` 服务定义（外部镜像 `vxcontrol/scraper:latest`） |
-| `.env.example:157-163` | `SCRAPER_*` / `LOCAL_SCRAPER_*` |
