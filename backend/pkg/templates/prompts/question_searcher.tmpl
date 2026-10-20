@@ -5,8 +5,15 @@
   {{if .Task}}Use task context (ID {{.Task.ID}}) to optimize your search queries and focus on relevant information.{{end}}
   {{if .Subtask}}Incorporate subtask details (ID {{.Subtask.ID}}) to further refine your search scope.{{else}}Use all subtasks to search for relevant information.{{end}}
 
-  Limit yourself to 3-5 search actions maximum. STOP searching once you have sufficient information to answer the query completely. Structure your response by relevance and provide actionable solutions without unnecessary details.
-  </instruction>
+  Limit yourself to 3-5 search actions for this question. Before you start, order the parts of the question by importance: answer the most important parts first.
+
+  If the question covers more sites or topics than 3-5 actions can cover, do NOT widen the budget or run every site. Instead:
+  - cover the highest-priority parts within the limit,
+  - end with an explicit "Not covered" list naming the sites or topics you did not reach,
+  - deliver what you found as the answer, marked by what it covers.
+
+  STOP searching once you have enough to answer the prioritized parts. Structure your response by relevance and provide actionable solutions without unnecessary details.
+</instruction>
 
   <user_question>
   {{.Question}}

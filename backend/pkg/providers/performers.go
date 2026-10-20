@@ -857,6 +857,12 @@ func (fp *flowProvider) recoverPartialSearch(
 	}
 	b.WriteString("Everything below was recovered after that termination. It is a partial result, ")
 	b.WriteString("not a completed search — do not present it as complete coverage.\n")
+	// The prohibition alone used to make the model treat a recovered result as a
+	// failed search and discard it. State what it is allowed to do as well, so
+	// a partial answer still reaches the report with the gap called out.
+	b.WriteString("Use the recovered information. State explicitly which parts of the question it ")
+	b.WriteString("does and does not answer, and present it as a partial result rather than retrying ")
+	b.WriteString("the whole search or reporting failure.\n")
 	if logsErr != nil {
 		b.WriteString("recovered from searchlogs: read failed (details logged server-side)\n")
 	}

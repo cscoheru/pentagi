@@ -33,6 +33,11 @@ const (
 	maxGeneralAgentChainIterations = 100
 	maxLimitedAgentChainIterations = 20
 	maxAgentShutdownIterations     = 3
+	// maxSearcherChainIterations bounds the searcher agent specifically. A
+	// search action is a serial round trip that can take tens of seconds, so a
+	// single searcher subtask must not approach the subtask budget: the cap
+	// keeps one unit of the split-work budget bounded.
+	maxSearcherChainIterations = 10
 	maxSoftDetectionsBeforeAbort   = 4
 	// A model that keeps replying in plain text is tool-incapable, which is typical for
 	// small fallback models. Passing every reply to the reflector only yields more text
@@ -161,6 +166,14 @@ func (fp *flowProvider) performAgentChain(
 
 	var maxCallsLimit int
 	switch optAgentType {
+	case pconfig.OptionsTypeSearcher:
+		// The searcher runs the split search units; its own ceiling is tighter
+		// than the generic limited-agent limit so a subtask stays on budget.
+		if fp.maxLACallsLimit <= 0 {
+			maxCallsLimit = maxSearcherChainIterations
+		} else {
+			maxCallsLimit = min(fp.maxLACallsLimit, maxSearcherChainIterations)
+		}
 	case pconfig.OptionsTypeAssistant, pconfig.OptionsTypePrimaryAgent,
 		pconfig.OptionsTypePentester, pconfig.OptionsTypeCoder, pconfig.OptionsTypeInstaller:
 		if fp.maxGACallsLimit <= 0 {
