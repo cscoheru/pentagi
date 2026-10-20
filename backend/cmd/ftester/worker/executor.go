@@ -470,7 +470,7 @@ func (te *toolExecutor) ExecuteFunctionWithMode(ctx context.Context, funcName st
 	// Nicely print function information
 	terminal.PrintHeader("Executing function: " + funcName)
 	terminal.PrintHeader("Arguments:")
-	terminal.PrintJSON(args)
+	terminal.PrintJSON(tools.RedactToolArgs(argsJSON))
 
 	// Execute the function (either in mock mode or real)
 	result, err := te.ExecuteFunctionWrapper(ctx, funcName, argsJSON)

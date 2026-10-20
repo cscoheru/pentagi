@@ -313,3 +313,94 @@ A 实际买到的是：
 `TestPerformSearcherChainDeathReturnsRecoveredSearchLogs` 立即失败于 `Should NOT be empty`，
 证明它钉住的正是修复前的作废行为。
 
+### A.6 item E 变更说明与落地（2026-10-20）
+
+> A.5.4 把 item E 登记为「改错误契约属架构决策，须先出变更说明」。本节即那份变更说明，
+> 同时记录落地结果。**A.5.4 的其余登记项（C、`performPentester`/`performEnricher`、
+> D/D2/D4、S1、P2）状态不变，仍为「登记未修」。**
+
+#### A.6.1 缺陷的事实描述
+
+flow 23（subtask 289）实测链路：
+
+1. `search` 工具委派给 searcher 子 agent 串行跑 11 个站点，耗时 265 s / 529 s，撞穿
+   `maxSubtaskRunDuration=5m`（`pkg/controller/task.go:345`）→ 链被预算终止。
+2. 框架**正确恢复**了部分结果：toolcall 4090 = 27,226 B、4094 = 37,563 B，均以
+   `[INCOMPLETE SEARCH]` 开头。
+3. **结果在返回边界被丢弃**：`pkg/tools/executor.go` 里 handler 成功返回后，
+   `storeToolResult(ctx, ...)` 与 `mlp.UpdateMsgResult(ctx, ...)` 用的是**已被预算杀死的
+   原始 `ctx`**，两者都失败 → `Execute` 返回 `("", err)`。实测 msglog 3739 / 3742 的
+   `result` 长度为 **0**，而对应 toolcall 有 27 KB。
+4. `performer.go` 把任何非 nil error 当作工具参数格式问题，走 `fixToolCallArgs` 重试；
+   预算死亡不是参数问题，白白再烧调用，最终模型上报 `report_result {success:false}`。
+
+**结论**：模型从未看到 `[INCOMPLETE SEARCH]` 横幅。此前「模型误读部分成功横幅」的假设不成立。
+
+#### A.6.2 变更的契约范围
+
+| 项 | 变更前 | 变更后 |
+|---|---|---|
+| handler 成功 + 持久化成功 | 返回 result | **不变** |
+| handler 成功 + 持久化失败 | 返回 `("", err)`，**结果丢失**，链被中止 | 返回 **result**，`err == nil`；持久化失败降级为 `Warn` 日志 |
+| handler 失败 | 返回 `("", err)` | **不变** |
+| 持久化 ctx | 原始 `ctx`（可能已取消） | `context.WithoutCancel(ctx)` + 10 s 独立上限 |
+| flow/task 级 `Success`、终态、停止语义、预算数值、`Tool` 接口 | — | **零改动** |
+
+**未改的**：错误契约的**方向**没变——handler 失败仍然返回 error 并中止链；只有
+「handler 已成功、仅持久化失败」这一种情形从「丢弃数据」改为「保留数据 + 记日志」。
+`fixToolCallArgs` 的重试语义未动（预算死亡时上游本就不该进入该路径，本次不扩大其判定范围）。
+
+#### A.6.3 实现
+
+- `pkg/tools/executor.go`：`persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), toolResultPersistTimeout)`
+  在 `wrapHandler` 之前一次性构造，`wrapHandler` 内的 `UpdateLogSuccess`/`UpdateLogFailed`
+  与其后的 `storeToolResult`/`UpdateMsgResult` 共用；`toolResultPersistTimeout = 10s`。
+- `pkg/tools/executor.go`：`storeToolResult` / `UpdateMsgResult` 失败改为 `logrus.Warn`
+  （带 `flow_id`/`task_id`/`subtask_id`/`func_name`），不再 `return "", err`。
+
+#### A.6.4 测试（§3.3 分层）
+
+`pkg/tools/executor_result_test.go`：
+
+| 用例 | 断言 |
+|---|---|
+| `TestExecuteKeepsResultWhenCallerContextIsCancelled` | 传入**已取消**的 ctx，handler 返回恢复材料 → `Execute` 返回该材料、`err == nil`、msglog 与 toolcall 都存到了该结果 |
+| `TestExecuteKeepsResultWhenPersistenceFails` | 持久化写返回错误 → `Execute` 仍返回 handler 结果且 `err == nil` |
+| `TestExecutePersistsRedactedArguments` | handler 拿到**真实** args，落库的是**脱敏**副本 |
+
+变异验证：把 `persistCtx` 换回原始 `ctx` 后，第一个用例立即失败于
+`stored message result = ""`，证明它钉住的正是修复前的作废行为。
+
+#### A.6.5 顺带落地：toolcall args 密钥脱敏（原 A.5.4 未登记项）
+
+**设计在 `/review` 对抗复审后做过一次重大修正**，先记录结论再列实现。
+
+最初方案是「键名层 + 复用进程级 `sharedReplacer` 作为值形状层」。对抗复审用真实 pattern 库证明该方案有两处硬伤（均已实测复现）：
+
+1. **值形状层对 JSON 密钥零保护**：`sharedReplacer` 的通用规则要求 `key[=:]` 相邻，而 JSON 解码后的字符串值不带这种锚，`{"api_key":"sk-..."}` 经 replacer **逐字节不变**。
+2. **它会毁掉渗透测试的审计轨迹**：`sharedReplacer` 来自 `PatternListTypeAll`，含 URL/IPv4/CVE/命令行密码旗标等通用规则。实测 `nmap -sV -p 443 192.168.1.10` 被改成
+   `nmap -sV -p §*Command Line Password Flags*§ §***ipv4***§` —— 端口、目标 IP、URL、CVE 号全部丢失，且 `-p` 被读成密码旗标，比不脱敏更糟。
+   改用 `PatternListTypeSecrets` 又太弱（仅 `ghp_` 等极少数 provider 格式命中）。
+
+**最终方案**：值形状层**不使用** `anonymizer` 库，改为在 `pkg/tools/redact.go` 内置一组精确的正则：
+
+- **键名层**：键归一化（小写、去非字母数字）后，命中 `apikey|secret|password|passwd|
+  passphrase|pswd|token|cred|authorization|authentication|bearer|privatekey|accesskey|
+  sessionkey|sessionid|authkey|sshkey|cookie|jwt` 即掩码其值；`auth/pass/pwd/psw/otp/pin`
+  走整键精确匹配（避免 `bypass`/`shipping` 误伤）；`maxtokens` 一类 LLM 预算键只对
+  数值豁免，藏在其名下的凭据仍被掩码。
+- **值形状层**：一条「凭据键锚定 + 值」的正则（`key=value` / `key: value`，保留键与分隔符）
+  加七条 provider 格式（`ghp_` / `github_pat_` / `AKIA` / `sk-` / `xox` / PEM / JWT）；
+  **不匹配 IP、URL、CVE、端口**，渗透命令原样保留。
+- **文档边界**：仅靠位置识别的密码（如 `mysql -pSecret`）不在覆盖内，已在源码注释明确。
+- **接入点**：`executor.go` 在解析后一次性算出脱敏副本，供 Langfuse span input、
+  `toolcalls.args`、向量库入库文本、summarize prompt 四处使用；**handler 仍拿到原始 args**。
+- 文档以 token 流逐 token 重写，**保留原始键序与转义**（不 HTML 转义 URL 的 `&`），
+  并拒绝「一个完整文档后跟额外字节」的输入（保留首个文档、丢弃尾部）。
+- 另修日志/打印泄漏共四处：`pkg/providers/performer.go` 两处 `func_args` 与 malformed-JSON
+  路径（后者无法解析时只记录 `args_bytes` 等元信息，不打印原文）、
+  `cmd/ftester/mocks/logs.go` 与 `cmd/ftester/worker/executor.go` 的参数打印；
+  日志片段统一走 rune 安全截断 `TruncateRunes`。
+- **未做（需另行决策）**：`msgchains.chain`（LLM 消息链）与 `vecstorelogs.query` 里的
+  历史明文回填；`flows.functions` 列明文存 `Functions.Token`；已泄漏密钥的轮换。
+

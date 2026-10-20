@@ -15,6 +15,7 @@ import (
 	"pentagi/pkg/observability/langfuse"
 	"pentagi/pkg/schema"
 
+	"github.com/sirupsen/logrus"
 	"github.com/vxcontrol/langchaingo/documentloaders"
 	"github.com/vxcontrol/langchaingo/llms"
 	"github.com/vxcontrol/langchaingo/textsplitter"
@@ -22,6 +23,13 @@ import (
 )
 
 const DefaultResultSizeLimit = 16 * 1024 // 16 KB
+
+// toolResultPersistTimeout bounds the writes that persist a tool result once
+// the handler has already succeeded. They run on a context detached from the
+// caller's cancellation so that an exhausted budget cannot discard a result
+// the agent has already earned. The deadline starts when the write begins,
+// because the tool call itself routinely runs for minutes.
+const toolResultPersistTimeout = 10 * time.Second
 
 const maxArgValueLength = 1024 // 1 KB limit for argument values
 
@@ -252,7 +260,7 @@ func (ce *customExecutor) Execute(
 		return fmt.Sprintf("function '%s' not found in available tools list", name), nil
 	}
 
-	var raw any
+	var raw json.RawMessage
 	if err := json.Unmarshal(args, &raw); err != nil {
 		return fmt.Sprintf("failed to unmarshal '%s' tool call arguments: %v: fix it", name, err), nil
 	}
@@ -260,13 +268,18 @@ func (ce *customExecutor) Execute(
 	toolType := GetToolType(name)
 	var obsWrapper observationWrapper
 
+	// The arguments are persisted in several places and are readable through
+	// the API, so only the masked copy leaves the executor. The handler below
+	// still receives the original arguments.
+	safeArgs := RedactToolArgs(args)
+
 	switch toolType {
 	case EnvironmentToolType, SearchNetworkToolType, StoreAgentResultToolType, StoreVectorDbToolType:
-		obsWrapper = ce.createToolObservation(ctx, obsName, args)
+		obsWrapper = ce.createToolObservation(ctx, obsName, safeArgs)
 	case AgentToolType:
-		obsWrapper = ce.createAgentObservation(ctx, obsName, args)
+		obsWrapper = ce.createAgentObservation(ctx, obsName, safeArgs)
 	case BarrierToolType:
-		obsWrapper = ce.createSpanObservation(ctx, obsName, args)
+		obsWrapper = ce.createSpanObservation(ctx, obsName, safeArgs)
 	case SearchVectorDbToolType:
 		// Skip - handlers create RETRIEVER internally
 		obsWrapper = &noopObservationWrapper{context: ctx}
@@ -277,7 +290,7 @@ func (ce *customExecutor) Execute(
 	ctx = obsWrapper.ctx()
 
 	var err error
-	msgID, msg := int64(0), ce.getMessage(args)
+	msgID, msg := int64(0), ce.getMessage(safeArgs)
 	if strings.Trim(msg, " \t\n\r") != "" {
 		msgType := getMessageType(name)
 		msgID, err = ce.mlp.PutMsg(ctx, msgType, ce.taskID, ce.subtaskID, streamID, thinking, msg)
@@ -286,7 +299,7 @@ func (ce *customExecutor) Execute(
 		}
 	}
 
-	tcID, err := ce.tclp.PutLog(ctx, id, name, args, ce.taskID, ce.subtaskID)
+	tcID, err := ce.tclp.PutLog(ctx, id, name, safeArgs, ce.taskID, ce.subtaskID)
 	if err != nil {
 		obsWrapper.end("", err, time.Since(startTime).Seconds())
 		return "", fmt.Errorf("failed to create toolcall: %w", err)
@@ -295,27 +308,35 @@ func (ce *customExecutor) Execute(
 	wrapHandler := func(ctx context.Context, name string, args json.RawMessage) (string, database.MsglogResultFormat, error) {
 		resultFormat := getMessageResultFormat(name)
 		result, err := handler(ctx, name, args)
-		persistCtx := context.WithoutCancel(ctx)
+
+		// The summarizer is an LLM call and may take as long as it needs, so
+		// it runs on a context detached from the caller's cancellation
+		// without a deadline of its own.
+		detachCtx := context.WithoutCancel(ctx)
 
 		if err != nil {
 			durationDelta := time.Since(startTime).Seconds()
 			failureResult := fmt.Sprintf("failed to execute handler: %s", err.Error())
-			_ = ce.tclp.UpdateLogFailed(persistCtx, tcID, failureResult, durationDelta)
+			logCtx, cancelLog := newPersistContext(ctx)
+			defer cancelLog()
+			_ = ce.tclp.UpdateLogFailed(logCtx, tcID, failureResult, durationDelta)
 			return "", resultFormat, fmt.Errorf("failed to execute handler: %w", err)
 		}
 
 		result = database.SanitizeUTF8(result)
 		allowSummarize := slices.Contains(allowedSummarizingToolsResult, name)
 		if ce.summarizer != nil && allowSummarize && len(result) > DefaultResultSizeLimit {
-			summarizePrompt, err := ce.getSummarizePrompt(name, string(args), result)
+			summarizePrompt, err := ce.getSummarizePrompt(name, string(safeArgs), result)
 			if err != nil {
 				return "", resultFormat, fmt.Errorf("failed to get summarize prompt: %w", err)
 			}
-			result, err = ce.summarizer(persistCtx, summarizePrompt)
+			result, err = ce.summarizer(detachCtx, summarizePrompt)
 			if err != nil {
 				durationDelta := time.Since(startTime).Seconds()
 				failureResult := fmt.Sprintf("failed to summarize result: %s", err.Error())
-				_ = ce.tclp.UpdateLogFailed(persistCtx, tcID, failureResult, durationDelta)
+				logCtx, cancelLog := newPersistContext(ctx)
+				defer cancelLog()
+				_ = ce.tclp.UpdateLogFailed(logCtx, tcID, failureResult, durationDelta)
 				return "", resultFormat, fmt.Errorf("failed to summarize result: %w", err)
 			}
 			resultFormat = database.MsglogResultFormatMarkdown
@@ -330,9 +351,12 @@ func (ce *customExecutor) Execute(
 		}
 
 		durationDelta := time.Since(startTime).Seconds()
-		err = ce.tclp.UpdateLogSuccess(persistCtx, tcID, result, durationDelta)
-		if err != nil {
-			return "", resultFormat, fmt.Errorf("failed to update toolcall result: %w", err)
+		logCtx, cancelLog := newPersistContext(ctx)
+		defer cancelLog()
+		if err := ce.tclp.UpdateLogSuccess(logCtx, tcID, result, durationDelta); err != nil {
+			// The toolcall row could not be updated, but the tool did produce
+			// a result and the agent must still receive it.
+			ce.logPersistFailure(logCtx, name, "failed to update toolcall result", err, nil)
 		}
 
 		return result, resultFormat, nil
@@ -350,21 +374,65 @@ func (ce *customExecutor) Execute(
 		return "", err
 	}
 
-	if err := ce.storeToolResult(ctx, name, result, args); err != nil {
-		obsWrapper.end(result, err, time.Since(startTime).Seconds())
-		return "", fmt.Errorf("failed to store tool result in long-term memory: %w", err)
+	// The handler already produced a result. Persisting it must never be able
+	// to throw that result away: the caller's context may already be cancelled
+	// (budget exhausted, task timeout), and the writes below used to run
+	// against it, so a late cancellation discarded the recovered data before
+	// the agent ever saw it. Each write gets its own context, created here
+	// after the handler returned, so that the deadline covers the write and
+	// not the tool call.
+	storeCtx, cancelStore := newPersistContext(ctx)
+	defer cancelStore()
+
+	if err := ce.storeToolResult(storeCtx, name, result, safeArgs); err != nil {
+		// Report the failure but keep the result: the caller turns a non-nil
+		// error into an aborted agent chain, which would hide the data the
+		// tool has already produced.
+		ce.logPersistFailure(storeCtx, name, "failed to store tool result in long-term memory", err, nil)
 	}
 
 	if msgID != 0 {
-		if err := ce.mlp.UpdateMsgResult(ctx, msgID, streamID, result, resultFormat); err != nil {
-			obsWrapper.end(result, err, time.Since(startTime).Seconds())
-			return "", err
+		msgCtx, cancelMsg := newPersistContext(ctx)
+		defer cancelMsg()
+		if err := ce.mlp.UpdateMsgResult(msgCtx, msgID, streamID, result, resultFormat); err != nil {
+			ce.logPersistFailure(msgCtx, name, "failed to update message result", err, logrus.Fields{
+				"msg_id": msgID,
+			})
 		}
 	}
 
 	obsWrapper.end(result, nil, time.Since(startTime).Seconds())
 
 	return result, nil
+}
+
+// newPersistContext returns the context for a write that persists a tool
+// result after the handler has already succeeded. It is detached from the
+// caller's cancellation so that an exhausted budget cannot discard a result
+// the agent has already earned, and it carries its own deadline so that the
+// write cannot hang the caller. The deadline must only be started when the
+// write begins: the tool call itself routinely runs for minutes.
+func newPersistContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), toolResultPersistTimeout)
+}
+
+// logPersistFailure reports a persistence failure without aborting the agent
+// chain. The tool itself succeeded, so the failure is a server-side problem
+// with the audit trail rather than a failed tool call.
+func (ce *customExecutor) logPersistFailure(
+	ctx context.Context,
+	name string,
+	message string,
+	err error,
+	extra logrus.Fields,
+) {
+	fields := enrichLogrusFields(ce.flowID, ce.taskID, ce.subtaskID, logrus.Fields{
+		"func_name": name,
+	})
+	for key, value := range extra {
+		fields[key] = value
+	}
+	logrus.WithContext(ctx).WithError(err).WithFields(fields).Warn(message)
 }
 
 func (ce *customExecutor) IsBarrierFunction(name string) bool {

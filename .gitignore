@@ -38,3 +38,7 @@ data/*
 # OS
 Thumbs.db
 
+
+# Local credentials for research tooling - never commit
+docs/user_*.md
+docs/*.env

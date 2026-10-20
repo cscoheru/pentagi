@@ -318,7 +318,7 @@ func (fp *flowProvider) performAgentChain(
 			if err != nil {
 				obs.LogErrorOrCancel(logger.WithFields(logrus.Fields{
 					"func_name": funcName,
-					"func_args": toolCall.FunctionCall.Arguments,
+					"func_args": string(tools.RedactToolArgs(json.RawMessage(toolCall.FunctionCall.Arguments))),
 				}), err, "failed to exec tool call")
 				return err
 			}
@@ -405,11 +405,12 @@ func (fp *flowProvider) execToolCall(
 
 	funcName := toolCall.FunctionCall.Name
 	funcArgs := json.RawMessage(toolCall.FunctionCall.Arguments)
+	redactedArgs := string(tools.RedactToolArgs(funcArgs))
 
 	logger := logrus.WithContext(ctx).WithFields(enrichLogrusFields(fp.flowID, taskID, subtaskID, logrus.Fields{
 		"agent":        fp.Type(),
 		"func_name":    funcName,
-		"func_args":    string(funcArgs)[:min(1000, len(funcArgs))],
+		"func_args":    tools.TruncateRunes(redactedArgs, 1000),
 		"tool_call_id": toolCall.ID,
 		"msg_chain_id": chainID,
 	}))
@@ -570,10 +571,13 @@ func (fp *flowProvider) callWithRetries(
 				}
 				sanitizedArgs := cast.SanitizeJSONControlChars(toolCall.FunctionCall.Arguments)
 				if !json.Valid([]byte(sanitizedArgs)) {
+					// The arguments cannot be parsed, so the key-name layer
+					// cannot be applied. Log the shape of the call but not the
+					// arguments themselves, which may carry a credential.
 					logger.WithFields(logrus.Fields{
 						"tool_call_id": toolCall.ID,
 						"tool_name":    toolCall.FunctionCall.Name,
-						"raw_args":     toolCall.FunctionCall.Arguments[:min(logSnippetLimit, len(toolCall.FunctionCall.Arguments))],
+						"args_bytes":   len(sanitizedArgs),
 					}).Warn("tool call has invalid JSON arguments, replacing with empty object to allow tool-call fixer to regenerate them")
 					sanitizedArgs = "{}"
 				}
@@ -1211,7 +1215,7 @@ func (fp *flowProvider) storeToolExecutionToGraphiti(
 	}
 
 	funcName := toolCall.FunctionCall.Name
-	funcArgs := toolCall.FunctionCall.Arguments
+	funcArgs := string(tools.RedactToolArgs(json.RawMessage(toolCall.FunctionCall.Arguments)))
 
 	registryDefs := tools.GetRegistryDefinitions()
 	toolDef, ok := registryDefs[funcName]

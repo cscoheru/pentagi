@@ -284,7 +284,7 @@ func (p *proxyToolCallLogProvider) PutLog(ctx context.Context, callID string, na
 	terminal.PrintInfo("Tool call log saved:")
 	terminal.PrintKeyValue("Call ID", callID)
 	terminal.PrintKeyValue("Name", name)
-	terminal.PrintKeyValue("Args", string(args))
+	terminal.PrintKeyValue("Args", string(tools.RedactToolArgs(args)))
 
 	if taskID != nil {
 		terminal.PrintKeyValueFormat("Task ID", "%d", *taskID)
