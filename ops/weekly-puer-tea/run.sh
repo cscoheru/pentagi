@@ -41,10 +41,13 @@ MAX_EMPTY_INPUTS=2
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 die() { log "ERROR: $*"; exit 1; }
 
-[ -f "$ENV_FILE" ] || die "缺少 $ENV_FILE（应含 PENTAGI_TOKEN，权限 0600）"
+# 注意：变量引用一律写 ${VAR}。本文件里有中文全角括号紧跟变量名的情况
+# （如 "$ENV_FILE（…）"），在 UTF-8 locale 下 bash 会把全角字符的字节当成
+# 变量名的一部分 → "unbound variable"。加花括号在任何 locale 下都安全。
+[ -f "${ENV_FILE}" ] || die "缺少 ${ENV_FILE}（应含 PENTAGI_TOKEN，权限 0600）"
 # shellcheck disable=SC1090
 set -a; . "$ENV_FILE"; set +a
-[ -n "${PENTAGI_TOKEN:-}" ] || die "$ENV_FILE 里没有 PENTAGI_TOKEN"
+[ -n "${PENTAGI_TOKEN:-}" ] || die "${ENV_FILE} 里没有 PENTAGI_TOKEN"
 [ -f "$PROMPT_FILE" ] || die "缺少 $PROMPT_FILE"
 [ -f "$EXPORT_JS" ] || die "缺少 $EXPORT_JS"
 command -v node >/dev/null || die "node 不在 PATH"
@@ -87,8 +90,23 @@ check_token_exp
 mkdir -p "$OUT_ROOT"
 
 # ── 建 flow（input = flow-prompt.md 全文，provider=minimax）──────────
+#
+# 输入 = flow-prompt.md +（可选）反馈 digest。
+#
+# digest 由下游 puer-hub 推送（它持有草稿箱的人工退回记录），文件落在
+# /opt/pentagi/ops/weekly-puer-tea/feedback-digest.md。拼接它是为了让
+# **检索选题**也吃到反馈——否则退回只能影响改写（写得像不像），
+# 影响不了选题（写的是什么），而「还在提春茶」恰恰是选题问题。
 log "创建 flow …"
-INPUT_JSON="$(jq -Rs '{input:., provider:"minimax"}' < "$PROMPT_FILE")"
+PROMPT_TEXT="$(cat "$PROMPT_FILE")"
+FEEDBACK_FILE="${SCRIPT_DIR}/feedback-digest.md"
+if [ -f "$FEEDBACK_FILE" ]; then
+  log "并入编辑退回反馈：$FEEDBACK_FILE（$(wc -c < "$FEEDBACK_FILE") 字节）"
+  PROMPT_TEXT="${PROMPT_TEXT}"$'\n\n---\n\n'"$(cat "$FEEDBACK_FILE")"
+else
+  log "无编辑退回反馈文件（$FEEDBACK_FILE 不存在），按基础检索词执行"
+fi
+INPUT_JSON="$(printf '%s' "$PROMPT_TEXT" | jq -Rs '{input:., provider:"minimax"}')"
 CREATE_RESP="$(api -X POST "$PENTAGI_URL/api/v1/flows/" -d "$INPUT_JSON")" \
   || die "建 flow 请求失败: $(printf '%s' "$CREATE_RESP" | head -c 300)"
 FLOW_ID="$(printf '%s' "$CREATE_RESP" | jq -r '.data.id // empty')"
